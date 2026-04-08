@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Evaluador IA - Matriz de Decisión Profesional</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <style>
+        .score-box { width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 6px; font-weight: 800; color: white; font-size: 11px; }
+        .bg-score-red    { background-color: #ef4444; }
+        .bg-score-yellow { background-color: #f59e0b; }
+        .bg-score-green  { background-color: #10b981; }
+        .final-score { color: black !important; font-weight: 900; font-size: 18px; }
+        .drag-active { border-color: #4f46e5; background-color: #f5f3ff; }
+        .provider-btn { transition: all 0.2s; }
+        .provider-btn.active { ring: 2px; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen pb-20 font-sans">
+
+    <header class="bg-indigo-950 text-white py-6 mb-8 shadow-2xl">
+        <div class="container mx-auto px-4 flex justify-between items-center">
+            <div>
+                <h1 class="text-2xl font-black uppercase italic text-indigo-400">Evaluador CV <span class="text-white">Multi-IA</span></h1>
+                <p class="text-indigo-200 text-[9px] tracking-widest uppercase font-bold">Gemini · Claude · ChatGPT — Límite: 6 Candidatos</p>
+            </div>
+            <div class="bg-white/10 px-4 py-2 rounded-full border border-white/20">
+                <span id="counterValue" class="text-sm font-black text-white">0/6 Candidatos</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="container mx-auto px-4 max-w-6xl">
+
+        <!-- CONFIGURACIÓN DE PROVEEDOR + API KEY -->
+        <div class="mb-8 bg-amber-50 border border-amber-200 p-5 rounded-2xl">
+            <h3 class="text-xs font-black text-amber-800 uppercase italic mb-4">1. Selecciona el motor de IA y pega tu API Key</h3>
+            <div class="flex flex-col md:flex-row gap-4 items-center">
+
+                <!-- Selector de proveedor -->
+                <div class="flex gap-2">
+                    <button data-provider="gemini"
+                        class="provider-btn flex items-center gap-2 px-4 py-2 rounded-xl border-2 border-blue-300 bg-white text-[11px] font-black text-blue-700 hover:bg-blue-50">
+                        <img src="https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg" class="w-4 h-4" onerror="this.style.display='none'">
+                        Gemini
+                    </button>
+                    <button data-provider="claude"
+                        class="provider-btn flex items-center gap-2 px-4 py-2 rounded-xl border-2 border-orange-300 bg-white text-[11px] font-black text-orange-700 hover:bg-orange-50">
+                        <i class="fas fa-robot text-orange-500"></i>
+                        Claude
+                    </button>
+                    <button data-provider="openai"
+                        class="provider-btn flex items-center gap-2 px-4 py-2 rounded-xl border-2 border-emerald-300 bg-white text-[11px] font-black text-emerald-700 hover:bg-emerald-50">
+                        <i class="fas fa-brain text-emerald-500"></i>
+                        ChatGPT
+                    </button>
+                </div>
+
+                <!-- Campo API Key -->
+                <div class="flex-1 flex gap-2 w-full">
+                    <div class="relative flex-1">
+                        <i class="fas fa-key absolute left-3 top-2.5 text-amber-400"></i>
+                        <input type="password" id="apiKeyInput" placeholder="Pega aquí tu API Key..."
+                               class="w-full pl-10 pr-4 py-2 bg-white border border-amber-300 rounded-xl text-xs focus:ring-2 focus:ring-amber-500 outline-none font-mono">
+                    </div>
+                    <button id="btnSaveKey" class="bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-black px-4 rounded-xl uppercase transition-all whitespace-nowrap">
+                        Guardar
+                    </button>
+                </div>
+            </div>
+
+            <!-- Indicador del proveedor activo -->
+            <p id="providerHint" class="text-[10px] text-amber-600 mt-3 italic"></p>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-8">
+            <!-- COLUMNA CONFIGURACIÓN -->
+            <div class="lg:col-span-1 space-y-6">
+                <section class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+                    <label class="block text-[10px] font-black text-slate-400 uppercase mb-2">2. Definir Cargo</label>
+                    <input type="text" id="jobTitle" placeholder="Título del Puesto" class="w-full mb-3 bg-slate-50 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-400">
+                    <textarea id="jobDescription" rows="5" placeholder="Descripción de requisitos (JD)..." class="w-full bg-slate-50 rounded-xl p-3 text-xs outline-none focus:ring-2 focus:ring-indigo-400"></textarea>
+                </section>
+
+                <section class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+                    <label class="block text-[10px] font-black text-slate-400 uppercase mb-2">3. Cargar CVs (Máx 6)</label>
+                    <div id="dropZone" class="border-2 border-dashed border-slate-200 rounded-2xl p-6 text-center cursor-pointer hover:bg-indigo-50 hover:border-indigo-400 transition-all">
+                        <i class="fas fa-file-pdf text-3xl text-slate-300 mb-2"></i>
+                        <input type="file" id="fileInput" multiple accept=".pdf,.txt" class="hidden">
+                        <p class="text-[9px] text-slate-400 font-bold uppercase leading-tight">Click o Arrastra archivos PDF / TXT</p>
+                    </div>
+                    <div id="candidateList" class="mt-4 space-y-2"></div>
+                </section>
+
+                <button id="btnEvaluate" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-4 rounded-2xl shadow-xl transition-all text-xs uppercase tracking-widest flex items-center justify-center gap-3">
+                    <i class="fas fa-bolt"></i> Ejecutar Análisis IA
+                </button>
+            </div>
+
+            <!-- COLUMNA RESULTADOS -->
+            <div class="lg:col-span-3">
+                <div id="loadingState" class="hidden bg-white p-24 rounded-3xl text-center shadow-sm border border-slate-200">
+                    <div class="animate-spin h-12 w-12 border-4 border-indigo-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+                    <h3 id="loadingTitle" class="text-xl font-black text-indigo-950 uppercase">Analizando perfiles...</h3>
+                    <p id="loadingMsg" class="text-slate-400 text-sm mt-2 italic">Inicializando evaluación...</p>
+                </div>
+
+                <div id="resultsSection" class="hidden space-y-10">
+                    <!-- Etiqueta del proveedor usado -->
+                    <div class="flex items-center gap-3">
+                        <span class="text-[9px] font-black uppercase text-slate-400">Evaluado con:</span>
+                        <span id="resultProvider" class="text-[10px] font-black uppercase px-3 py-1 rounded-full bg-indigo-100 text-indigo-700"></span>
+                    </div>
+
+                    <!-- MATRIZ -->
+                    <div class="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden">
+                        <div class="bg-slate-50 px-8 py-5 border-b border-slate-100 flex justify-between items-center">
+                            <h2 class="text-xs font-black text-indigo-950 uppercase tracking-widest italic">Matriz Comparativa de Talentos</h2>
+                            <span class="text-[10px] font-bold text-slate-400 italic">Score final &lt; 7.0 = Descarte automático</span>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left">
+                                <thead class="bg-slate-50 text-[9px] uppercase text-slate-400 font-black">
+                                    <tr>
+                                        <th class="px-8 py-4">Candidato</th>
+                                        <th class="px-4 py-4 text-center">Tech</th>
+                                        <th class="px-4 py-4 text-center">Exp</th>
+                                        <th class="px-4 py-4 text-center">Edu</th>
+                                        <th class="px-4 py-4 text-center">Soft</th>
+                                        <th class="px-4 py-4 text-center">Fit</th>
+                                        <th class="px-8 py-4 text-center">Final</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- TOP 3 -->
+                    <div class="space-y-4">
+                        <h2 class="text-indigo-900 font-black uppercase text-[10px] tracking-widest ml-2">Análisis Estratégico (Top 3)</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6" id="top3Section"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+
+        let candidatesData = [];
+        let candidateIdCounter = 0;
+        let currentProvider = 'gemini';
+
+        const PROVIDERS = {
+            gemini: {
+                label: 'Google Gemini',
+                model: 'gemini-3.0-flash-preview',
+                hint: 'Obtén tu key en: aistudio.google.com → API Keys',
+                storageKey: 'ai_key_gemini'
+            },
+            claude: {
+                label: 'Anthropic Claude',
+                model: 'claude-sonnet-4-6',
+                hint: 'Obtén tu key en: console.anthropic.com → API Keys',
+                storageKey: 'ai_key_claude'
+            },
+            openai: {
+                label: 'OpenAI ChatGPT',
+                model: 'gpt-4o-mini',
+                hint: 'Obtén tu key en: platform.openai.com → API Keys',
+                storageKey: 'ai_key_openai'
+            }
+        };
+
+        // ── Referencias DOM ─────────────────────────────────────────────────
+        const dropZone       = document.getElementById('dropZone');
+        const fileInput      = document.getElementById('fileInput');
+        const candidateList  = document.getElementById('candidateList');
+        const btnEvaluate    = document.getElementById('btnEvaluate');
+        const loadingState   = document.getElementById('loadingState');
+        const loadingMsg     = document.getElementById('loadingMsg');
+        const loadingTitle   = document.getElementById('loadingTitle');
+        const resultsSection = document.getElementById('resultsSection');
+        const apiKeyInput    = document.getElementById('apiKeyInput');
+        const btnSaveKey     = document.getElementById('btnSaveKey');
+        const providerHint   = document.getElementById('providerHint');
+
+        // ── Selector de proveedor ───────────────────────────────────────────
+        function setProvider(name) {
+            currentProvider = name;
+            const p = PROVIDERS[name];
+            providerHint.textContent = `Proveedor activo: ${p.label} (${p.model}) — ${p.hint}`;
+
+            document.querySelectorAll('.provider-btn').forEach(btn => {
+                btn.classList.remove('ring-2', 'ring-offset-1', 'ring-indigo-400', 'opacity-50');
+                if (btn.dataset.provider === name) {
+                    btn.classList.add('ring-2', 'ring-offset-1', 'ring-indigo-400');
+                } else {
+                    btn.classList.add('opacity-50');
+                }
+            });
+
+            const saved = localStorage.getItem(p.storageKey);
+            apiKeyInput.value = saved || '';
+            apiKeyInput.placeholder = `API Key de ${p.label}...`;
+        }
+
+        document.querySelectorAll('.provider-btn').forEach(btn => {
+            btn.addEventListener('click', () => setProvider(btn.dataset.provider));
+        });
+
+        window.addEventListener('load', () => setProvider('gemini'));
+
+        // ── Guardar API Key ─────────────────────────────────────────────────
+        btnSaveKey.addEventListener('click', () => {
+            const key = apiKeyInput.value.trim();
+            if (!key) return alert('Ingresa una API Key antes de guardar.');
+            localStorage.setItem(PROVIDERS[currentProvider].storageKey, key);
+            btnSaveKey.textContent = '✓ Guardada';
+            btnSaveKey.classList.replace('bg-amber-500', 'bg-emerald-500');
+            setTimeout(() => {
+                btnSaveKey.textContent = 'Guardar';
+                btnSaveKey.classList.replace('bg-emerald-500', 'bg-amber-500');
+            }, 2000);
+        });
+
+        // ── Seguridad: escape HTML ──────────────────────────────────────────
+        function escapeHtml(str) {
+            return String(str).replace(/[&<>"']/g, m => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[m]));
+        }
+
+        // ── Drag & Drop ─────────────────────────────────────────────────────
+        dropZone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-active'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-active'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-active');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        // ── Manejo de archivos ──────────────────────────────────────────────
+        async function handleFiles(files) {
+            const space = 6 - candidatesData.length;
+            if (space === 0) return alert('Límite alcanzado: máximo 6 candidatos.');
+            const toProcess = Array.from(files).slice(0, space);
+            if (files.length > space) alert(`Solo se cargaron ${space} archivo(s) para no exceder el límite de 6.`);
+            for (const file of toProcess) {
+                const name    = file.name.replace(/\.[^/.]+$/, "");
+                const content = file.type === "application/pdf" ? await extractTextFromPDF(file) : await file.text();
+                candidatesData.push({ id: ++candidateIdCounter, name, content });
+            }
+            updateUI();
+        }
+
+        async function extractTextFromPDF(file) {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            let fullText = "";
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const text = await page.getTextContent();
+                fullText += text.items.map(s => s.str).join(" ") + "\n";
+            }
+            return fullText;
+        }
+
+        function updateUI() {
+            document.getElementById('counterValue').innerText = `${candidatesData.length}/6 Candidatos`;
+            candidateList.innerHTML = candidatesData.map(c => `
+                <div class="flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-slate-100">
+                    <div class="flex items-center gap-2">
+                        <i class="fas fa-file-pdf text-red-400 text-sm"></i>
+                        <span class="text-[11px] font-bold text-slate-700 truncate w-32">${escapeHtml(c.name)}</span>
+                    </div>
+                    <button data-id="${c.id}" class="remove-btn text-slate-300 hover:text-red-500 transition-colors">
+                        <i class="fas fa-minus-circle"></i>
+                    </button>
+                </div>
+            `).join('');
+            candidateList.querySelectorAll('.remove-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    candidatesData = candidatesData.filter(c => c.id !== parseInt(btn.dataset.id, 10));
+                    updateUI();
+                });
+            });
+        }
+
+        // ── Prompt compartido ────────────────────────────────────────────────
+        function buildPrompt(candidate, jobTitle, jobDesc) {
+            return `Eres un experto en selección de personal con 20 años de experiencia en RRHH.
+
+PUESTO: ${jobTitle || 'No especificado'}
+JOB DESCRIPTION:
+${jobDesc || 'No especificado'}
+
+CV DEL CANDIDATO (${candidate.name}):
+${candidate.content.substring(0, 4000)}
+
+Evalúa al candidato para este cargo en escala de 0.0 a 10.0:
+- tech: Habilidades técnicas relevantes para el cargo
+- exp: Experiencia laboral relacionada
+- edu: Formación académica y certificaciones
+- soft: Habilidades blandas (comunicación, liderazgo, trabajo en equipo)
+- fit: Alineación con el cargo y la cultura organizacional
+
+Responde ÚNICAMENTE con JSON válido, sin texto adicional:
+{"tech":0.0,"exp":0.0,"edu":0.0,"soft":0.0,"fit":0.0,"analisis":"Análisis de 1-2 oraciones."}`;
+        }
+
+        function parseJsonResponse(text) {
+            const cleaned = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+            const match   = cleaned.match(/\{[\s\S]*\}/);
+            if (!match) throw new Error('Respuesta inesperada del modelo.');
+            return JSON.parse(match[0]);
+        }
+
+        // ── Adaptadores por proveedor ────────────────────────────────────────
+        const GEMINI_MODELS = [
+            'gemini-3.0-flash-preview',
+            'gemini-3.1-flash-lite-preview',
+            'gemini-3.1-pro-preview'
+        ];
+
+        async function callGemini(candidate, jobTitle, jobDesc, apiKey) {
+            let lastError = '';
+            for (const model of GEMINI_MODELS) {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: buildPrompt(candidate, jobTitle, jobDesc) }] }],
+                        generationConfig: { temperature: 0.2, maxOutputTokens: 500 }
+                    })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    loadingTitle.textContent = `Analizando con ${model}...`;
+                    return parseJsonResponse(data.candidates?.[0]?.content?.parts?.[0]?.text || '');
+                }
+                const err = await res.json();
+                lastError = err.error?.message || `Error ${res.status}`;
+                const isUnavailable = lastError.includes('not found') || lastError.includes('no longer available') || lastError.includes('not supported');
+                if (!isUnavailable) throw new Error(lastError);
+            }
+            throw new Error(`Ningún modelo Gemini disponible. Último error: ${lastError}`);
+        }
+
+        async function callClaude(candidate, jobTitle, jobDesc, apiKey) {
+            const res = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': apiKey,
+                    'anthropic-version': '2023-06-01',
+                    'anthropic-dangerous-direct-browser-access': 'true'
+                },
+                body: JSON.stringify({
+                    model: 'claude-sonnet-4-6',
+                    max_tokens: 500,
+                    messages: [{ role: 'user', content: buildPrompt(candidate, jobTitle, jobDesc) }]
+                })
+            });
+            if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || `Error ${res.status}`); }
+            const data = await res.json();
+            return parseJsonResponse(data.content?.[0]?.text || '');
+        }
+
+        async function callOpenAI(candidate, jobTitle, jobDesc, apiKey) {
+            const res = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`
+                },
+                body: JSON.stringify({
+                    model: 'gpt-4o-mini',
+                    temperature: 0.2,
+                    max_tokens: 500,
+                    messages: [{ role: 'user', content: buildPrompt(candidate, jobTitle, jobDesc) }]
+                })
+            });
+            if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || `Error ${res.status}`); }
+            const data = await res.json();
+            return parseJsonResponse(data.choices?.[0]?.message?.content || '');
+        }
+
+        async function evaluateCandidate(candidate, jobTitle, jobDesc) {
+            const apiKey = apiKeyInput.value.trim();
+            if (!apiKey) throw new Error(`Ingresa tu API Key de ${PROVIDERS[currentProvider].label}.`);
+            if (currentProvider === 'gemini') return callGemini(candidate, jobTitle, jobDesc, apiKey);
+            if (currentProvider === 'claude') return callClaude(candidate, jobTitle, jobDesc, apiKey);
+            if (currentProvider === 'openai') return callOpenAI(candidate, jobTitle, jobDesc, apiKey);
+        }
+
+        // ── Botón Evaluar ────────────────────────────────────────────────────
+        btnEvaluate.addEventListener('click', async () => {
+            if (candidatesData.length === 0) return alert('Carga al menos un candidato.');
+
+            const jobTitle = document.getElementById('jobTitle').value.trim();
+            const jobDesc  = document.getElementById('jobDescription').value.trim();
+            const provider = PROVIDERS[currentProvider];
+
+            btnEvaluate.classList.add('hidden');
+            loadingState.classList.remove('hidden');
+            resultsSection.classList.add('hidden');
+            loadingTitle.textContent = `Analizando con ${provider.label}...`;
+
+            const evals = [];
+
+            for (let i = 0; i < candidatesData.length; i++) {
+                const c = candidatesData[i];
+                loadingMsg.textContent = `Evaluando ${i + 1} de ${candidatesData.length}: ${c.name}...`;
+                try {
+                    const result = await evaluateCandidate(c, jobTitle, jobDesc);
+                    const scores = [result.tech, result.exp, result.edu, result.soft, result.fit].map(parseFloat);
+                    const total  = parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1));
+                    evals.push({
+                        nombre: c.name,
+                        tech: scores[0].toFixed(1), exp: scores[1].toFixed(1),
+                        edu:  scores[2].toFixed(1), soft: scores[3].toFixed(1),
+                        fit:  scores[4].toFixed(1), final: total,
+                        apto: total >= 7.0, analisis: result.analisis || ''
+                    });
+                } catch (err) {
+                    loadingState.classList.add('hidden');
+                    btnEvaluate.classList.remove('hidden');
+                    alert(`Error evaluando "${c.name}": ${err.message}`);
+                    return;
+                }
+            }
+
+            evals.sort((a, b) => b.final - a.final);
+            document.getElementById('resultProvider').textContent = `${provider.label} · ${provider.model}`;
+            renderTable(evals);
+            renderTop3(evals);
+
+            loadingState.classList.add('hidden');
+            resultsSection.classList.remove('hidden');
+            btnEvaluate.classList.remove('hidden');
+        });
+
+        // ── Rendering ────────────────────────────────────────────────────────
+        function getScoreClass(s) {
+            const n = parseFloat(s);
+            if (n <= 4.0) return 'bg-score-red';
+            if (n <= 7.9) return 'bg-score-yellow';
+            return 'bg-score-green';
+        }
+
+        function renderTable(evals) {
+            document.getElementById('tableBody').innerHTML = evals.map(e => `
+                <tr class="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                    <td class="px-8 py-5 font-black text-indigo-950 text-sm uppercase italic">${escapeHtml(e.nombre)}</td>
+                    <td class="px-4 py-5"><div class="mx-auto score-box ${getScoreClass(e.tech)}">${e.tech}</div></td>
+                    <td class="px-4 py-5"><div class="mx-auto score-box ${getScoreClass(e.exp)}">${e.exp}</div></td>
+                    <td class="px-4 py-5"><div class="mx-auto score-box ${getScoreClass(e.edu)}">${e.edu}</div></td>
+                    <td class="px-4 py-5"><div class="mx-auto score-box ${getScoreClass(e.soft)}">${e.soft}</div></td>
+                    <td class="px-4 py-5"><div class="mx-auto score-box ${getScoreClass(e.fit)}">${e.fit}</div></td>
+                    <td class="px-8 py-5 text-center final-score">${e.final}</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderTop3(evals) {
+            document.getElementById('top3Section').innerHTML = evals.slice(0, 3).map((e, i) => `
+                <div class="bg-white p-6 rounded-3xl border ${e.apto ? 'border-emerald-100' : 'border-red-100'} shadow-sm">
+                    <div class="flex justify-between items-center mb-4">
+                        <span class="text-[9px] font-black uppercase text-indigo-400">RANK #0${i + 1}</span>
+                        <span class="text-xl font-black text-slate-900">${e.final}</span>
+                    </div>
+                    <h4 class="text-sm font-black text-indigo-950 uppercase mb-3">${escapeHtml(e.nombre)}</h4>
+                    <p class="text-[11px] text-slate-500 italic mb-5 leading-relaxed">"${escapeHtml(e.analisis)}"</p>
+                    <div class="flex items-center gap-3">
+                        <div class="h-1.5 flex-1 bg-slate-100 rounded-full overflow-hidden">
+                            <div class="h-full ${e.apto ? 'bg-emerald-500' : 'bg-red-500'}" style="width: ${e.final * 10}%"></div>
+                        </div>
+                        <span class="text-[9px] font-black uppercase ${e.apto ? 'text-emerald-600' : 'text-red-600'}">
+                            ${e.apto ? 'Apto' : 'No Apto'}
+                        </span>
+                    </div>
+                </div>
+            `).join('');
+        }
+    </script>
+</body>
+</html>
