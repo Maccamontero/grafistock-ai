@@ -38,6 +38,7 @@ interface InventoryRecord {
   itemId: string;
   stock: number;
   onOrder: number;
+  ventas_mensuales?: number[];
 }
 
 export default function App() {
@@ -125,125 +126,107 @@ export default function App() {
 
   const chartData = useMemo(() => {
     if (!selectedItem) return [];
-    const itemHistory = history.filter(h => h.itemId === selectedItem);
-    
-    // Group daily data into weeks
-    const weeklyMap: Record<string, number> = {};
-    itemHistory.forEach(h => {
-      // Simple week grouping: get the start of the week (Monday)
-      const date = new Date(h.date);
-      const day = date.getDay();
-      const diff = date.getDate() - day + (day === 0 ? -6 : 1); // Adjust to Monday
-      const monday = new Date(date.setDate(diff)).toISOString().substring(0, 10);
-      
-      weeklyMap[monday] = (weeklyMap[monday] || 0) + h.quantity;
-    });
-
-    // Simulate historical stock levels with arrivals
-    const weeklyData = Object.entries(weeklyMap)
-      .map(([date, quantity]) => ({ date, quantity }))
+    // History is already monthly (date = YYYY-MM-01, quantity = UNIDADES VENDIDAS)
+    const monthlyData = history
+      .filter(h => h.itemId === selectedItem)
       .sort((a, b) => a.date.localeCompare(b.date));
 
-    // Simulation parameters
-    const leadTimeWeeks = Math.ceil((currentItem?.leadTimeDays || 30) / 7);
-    let runningStock = 300; // Start with a healthy stock 120 days ago
-    let pendingArrivals: { weekIndex: number, quantity: number }[] = [];
-    
-    const dataWithStock = weeklyData.map((w, index) => {
-      // Check for arrivals
-      const arrivals = pendingArrivals.filter(p => p.weekIndex === index);
-      arrivals.forEach(a => {
-        runningStock += a.quantity;
-      });
-      pendingArrivals = pendingArrivals.filter(p => p.weekIndex !== index);
+    if (monthlyData.length === 0) return [];
+
+    // Stock simulation: start from a reasonable proxy and work backwards
+    const leadTimeMonths = Math.ceil((currentItem?.leadTimeDays || 60) / 30);
+    const avgMonthly = monthlyData.reduce((a, b) => a + b.quantity, 0) / monthlyData.length;
+    const reorderThreshold = Math.round(avgMonthly * leadTimeMonths * 1.2);
+    const reorderQty = Math.round(avgMonthly * (leadTimeMonths + 3));
+
+    let runningStock = currentInv?.stock ?? Math.round(avgMonthly * 4);
+    // Reconstruct backwards to estimate starting stock
+    let totalConsumed = monthlyData.reduce((a, b) => a + b.quantity, 0);
+    runningStock = Math.max(runningStock, Math.round(totalConsumed * 0.15));
+
+    let pendingArrivals: { monthIndex: number; quantity: number }[] = [];
+
+    const dataWithStock = monthlyData.map((m, index) => {
+      const arrivals = pendingArrivals.filter(p => p.monthIndex === index);
+      arrivals.forEach(a => { runningStock += a.quantity; });
+      pendingArrivals = pendingArrivals.filter(p => p.monthIndex !== index);
 
       const stockBeforeSales = runningStock;
-      runningStock = Math.max(0, runningStock - w.quantity);
+      runningStock = Math.max(0, runningStock - m.quantity);
 
-      // Reorder logic: 
-      // If stock is low and nothing is in transit, suggest an order (Red Bar)
-      // Once suggested, it becomes "In Transit" (Light Blue Bar) for the next weeks
       let onOrder = 0;
       let suggestedOrder = 0;
+      const hasPending = pendingArrivals.length > 0;
 
-      const isAlreadyPending = pendingArrivals.length > 0;
-
-      if (runningStock < 100 && !isAlreadyPending) {
-        suggestedOrder = 200;
-        // Simulate the order being placed
-        pendingArrivals.push({ 
-          weekIndex: index + leadTimeWeeks, 
-          quantity: 200 
-        });
-      } else if (isAlreadyPending) {
-        onOrder = 200;
+      if (runningStock < reorderThreshold && !hasPending) {
+        suggestedOrder = reorderQty;
+        pendingArrivals.push({ monthIndex: index + leadTimeMonths, quantity: reorderQty });
+      } else if (hasPending) {
+        onOrder = reorderQty;
       }
 
-      return { 
-        ...w, 
-        stock: stockBeforeSales, 
-        onOrder: onOrder,
-        suggestedOrder: suggestedOrder
-      };
+      return { ...m, stock: stockBeforeSales, onOrder, suggestedOrder };
     });
 
-    return dataWithStock.map((w, index) => {
-      // Calculate SMA 4 (approx 1 month of weeks)
+    return dataWithStock.map((m, index) => {
       const last4 = dataWithStock.slice(Math.max(0, index - 3), index + 1);
       const sma4 = last4.reduce((a, b) => a + b.quantity, 0) / last4.length;
-      
-      // Calculate SMA 12 (approx 1 quarter)
+
       const last12 = dataWithStock.slice(Math.max(0, index - 11), index + 1);
       const sma12 = last12.reduce((a, b) => a + b.quantity, 0) / last12.length;
 
+      // Format date as "Ene 23" for readability
+      const d = new Date(m.date + "T12:00:00");
+      const label = d.toLocaleDateString("es-CO", { month: "short", year: "2-digit" });
+
       return {
-        date: w.date,
-        quantity: w.quantity,
-        stock: w.stock,
-        onOrder: w.onOrder,
-        suggestedOrder: w.suggestedOrder,
-        sma4: Number(sma4.toFixed(2)),
-        sma12: Number(sma12.toFixed(2))
+        date: label,
+        quantity: m.quantity,
+        stock: m.stock,
+        onOrder: m.onOrder,
+        suggestedOrder: m.suggestedOrder,
+        sma4: Number(sma4.toFixed(0)),
+        sma12: Number(sma12.toFixed(0)),
       };
     });
-  }, [selectedItem, history, currentItem]);
+  }, [selectedItem, history, currentItem, currentInv]);
 
   const analysisData = useMemo(() => {
     if (!selectedItem || !currentItem) return null;
-    const itemHistory = history.filter(h => h.itemId === selectedItem);
+    const itemHistory = history
+      .filter(h => h.itemId === selectedItem)
+      .sort((a, b) => a.date.localeCompare(b.date));
     const price = currentItem.price || 10;
 
-    const last7Days = itemHistory.slice(-7).reduce((acc, h) => acc + h.quantity, 0);
-    const last30Days = itemHistory.slice(-30).reduce((acc, h) => acc + h.quantity, 0);
-    const last90Days = itemHistory.slice(-90).reduce((acc, h) => acc + h.quantity, 0);
+    const last1 = itemHistory.slice(-1).reduce((acc, h) => acc + h.quantity, 0);
+    const last3 = itemHistory.slice(-3).reduce((acc, h) => acc + h.quantity, 0);
+    const last12 = itemHistory.slice(-12).reduce((acc, h) => acc + h.quantity, 0);
 
     return {
-      lastWeek: { units: last7Days, value: last7Days * price },
-      lastMonth: { units: last30Days, value: last30Days * price },
-      lastQuarter: { units: last90Days, value: last90Days * price },
-      price: price
+      lastWeek: { units: last1, value: last1 * price },
+      lastMonth: { units: last3, value: last3 * price },
+      lastQuarter: { units: last12, value: last12 * price },
+      price: price,
     };
   }, [selectedItem, currentItem, history]);
 
   const currentStats = useMemo(() => {
     if (!selectedItem || !currentItem || !currentInv) return null;
-    
-    // Aggregate daily history into monthly for stats
-    const itemHistory = history.filter(h => h.itemId === selectedItem);
-    const monthlyMap: Record<string, number> = {};
-    itemHistory.forEach(h => {
-      const monthKey = h.date.substring(0, 7);
-      monthlyMap[monthKey] = (monthlyMap[monthKey] || 0) + h.quantity;
-    });
-    const monthlySales = Object.values(monthlyMap);
+
+    // Use real monthly sales from ventas CSV (already built on server)
+    const monthlySales = currentInv.ventas_mensuales ?? [];
+    const nonZero = monthlySales.filter(v => v > 0);
+    const filled = nonZero.length >= 6
+      ? nonZero
+      : [...nonZero, ...Array(Math.max(0, 6 - nonZero.length)).fill(nonZero[0] ?? 0)];
 
     return calculateInventoryMetrics({
       sku: currentItem.name,
-      ventas_mensuales: monthlySales.length >= 6 ? monthlySales : [...monthlySales, ...Array(6-monthlySales.length).fill(monthlySales[0] || 0)],
+      ventas_mensuales: filled,
       stock_actual: currentInv.stock,
-      lead_time_dias: currentItem.leadTimeDays
+      lead_time_dias: currentItem.leadTimeDays,
     });
-  }, [selectedItem, currentItem, currentInv, history]);
+  }, [selectedItem, currentItem, currentInv]);
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-orange-100">
@@ -381,7 +364,12 @@ export default function App() {
                               <div>
                                 <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Días Cobertura</p>
                                 <h3 className="text-2xl font-bold">
-                                  {currentInv ? Math.round(currentInv.stock / 5) : "--"} 
+                                  {currentInv?.ventas_mensuales?.length
+                                    ? (() => {
+                                        const avg = currentInv.ventas_mensuales.reduce((a, b) => a + b, 0) / currentInv.ventas_mensuales.length;
+                                        return avg > 0 ? Math.round(currentInv.stock / (avg / 30)) : "--";
+                                      })()
+                                    : "--"}
                                 </h3>
                               </div>
                               <div className="p-3 bg-orange-50 rounded-full">
@@ -475,10 +463,10 @@ export default function App() {
                                 />
 
                                 {/* Demand Lines */}
-                                <Line 
-                                  type="monotone" 
-                                  dataKey="quantity" 
-                                  name="Venta Semanal"
+                                <Line
+                                  type="monotone"
+                                  dataKey="quantity"
+                                  name="Venta Mensual"
                                   stroke="#EA580C" 
                                   strokeWidth={3} 
                                   dot={{ r: 3, fill: '#EA580C' }}
@@ -688,7 +676,7 @@ export default function App() {
                               <div className="space-y-2">
                                 <div className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-lg shadow-sm">
                                   <div>
-                                    <p className="text-[10px] text-gray-400 font-bold uppercase">Última Semana</p>
+                                    <p className="text-[10px] text-gray-400 font-bold uppercase">Último Mes</p>
                                     <p className="text-sm font-bold">{analysisData?.lastWeek.units} {currentItem.unit}s</p>
                                   </div>
                                   <div className="text-right">
@@ -698,7 +686,7 @@ export default function App() {
                                 </div>
                                 <div className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-lg shadow-sm">
                                   <div>
-                                    <p className="text-[10px] text-gray-400 font-bold uppercase">Últimos 30 Días</p>
+                                    <p className="text-[10px] text-gray-400 font-bold uppercase">Últimos 3 Meses</p>
                                     <p className="text-sm font-bold">{analysisData?.lastMonth.units} {currentItem.unit}s</p>
                                   </div>
                                   <div className="text-right">
@@ -708,7 +696,7 @@ export default function App() {
                                 </div>
                                 <div className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-lg shadow-sm">
                                   <div>
-                                    <p className="text-[10px] text-gray-400 font-bold uppercase">Último Trimestre</p>
+                                    <p className="text-[10px] text-gray-400 font-bold uppercase">Últimos 12 Meses</p>
                                     <p className="text-sm font-bold">{analysisData?.lastQuarter.units} {currentItem.unit}s</p>
                                   </div>
                                   <div className="text-right">
