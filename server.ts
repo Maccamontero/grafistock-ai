@@ -8,7 +8,7 @@ import Papa from "papaparse";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --- Date parsing ---
+// --- Date parsing (for importaciones) ---
 const MONTH_MAP: Record<string, string> = {
   ene: "01", feb: "02", mar: "03", abr: "04",
   may: "05", jun: "06", jul: "07", ago: "08",
@@ -26,12 +26,24 @@ function parseDate(raw: string): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-function toISO(d: Date): string {
-  return d.toISOString().substring(0, 10);
-}
 
 function diffDays(a: Date, b: Date): number {
   return Math.round(Math.abs(b.getTime() - a.getTime()) / 86400000);
+}
+
+// --- Number parsing helpers ---
+function parseQty(raw: string | undefined): number {
+  if (!raw) return 0;
+  const cleaned = raw.replace(/[\s,]/g, "").replace(/[^\d]/g, "");
+  return parseInt(cleaned, 10) || 0;
+}
+
+function parseInventory(raw: string | undefined): number {
+  if (!raw) return 0;
+  const s = raw.trim();
+  if (s === "-" || s === "" || s.replace(/\s/g, "") === "-") return 0;
+  const cleaned = s.replace(/[\s,]/g, "").replace(/[^\d]/g, "");
+  return parseInt(cleaned, 10) || 0;
 }
 
 // --- Category / unit helpers ---
@@ -72,92 +84,148 @@ interface ImportRow {
   " COSTO TOTAL ": string;
 }
 
+interface VentasRow {
+  "COD. PRODUCTO": string;
+  "AÑO": string;
+  "MES": string;
+  "MES NUMERO": string;
+  "DESCRIPCION": string;
+  "CATEGORIA": string;
+  "UNIDADES VENDIDAS": string;
+  " VALOR ": string;
+  "INVENTARIO FINAL": string;
+}
+
 function readCSV(filePath: string): any[] {
   const raw = fs.readFileSync(filePath, "utf-8").replace(/^\uFEFF/, "");
   const result = Papa.parse(raw, { header: true, skipEmptyLines: true });
   return result.data as any[];
 }
 
-function loadImportaciones() {
+function loadImportaciones(): ImportRow[] {
   const filePath = path.join(__dirname, "public", "data", "Importaciones consolidadas csv.csv");
   if (!fs.existsSync(filePath)) return [];
   return readCSV(filePath) as ImportRow[];
 }
 
-// --- Build API data from real CSV ---
+function loadVentas(): VentasRow[] {
+  const filePath = path.join(__dirname, "public", "data", "Consolidado ventas e inventarios mes a mes CSV.csv");
+  if (!fs.existsSync(filePath)) return [];
+  return readCSV(filePath) as VentasRow[];
+}
+
+// --- Build API data from real CSVs ---
 function buildData() {
-  const rows = loadImportaciones();
+  const importRows = loadImportaciones();
+  const ventasRows = loadVentas();
 
-  // Aggregate by CODIGO
-  const suppliesMap: Record<string, {
-    id: string; name: string; category: string; unit: string;
-    leadTimes: number[]; prices: number[]; lastPrice: number;
-    imports: { date: string; quantity: number }[];
-  }> = {};
+  // ── 1. Lead times from importaciones ──
+  const leadTimesMap: Record<string, number[]> = {};
+  const priceMap: Record<string, number> = {};
 
-  for (const row of rows) {
+  for (const row of importRows) {
     const id = row.CODIGO?.trim();
-    const name = row.PRODUCTO?.trim();
-    if (!id || !name) continue;
+    if (!id) continue;
 
     const ordered = parseDate(row["FECHA ORDEN DE COMPRA"]);
     const arrived = parseDate(row["FECHA DE LLEGADA"]);
-    const qty = parseInt((row[" CANTIDAD "] ?? "").replace(/\D/g, ""), 10) || 0;
     const price = parseInt((row[" COSTO UNITARIO  "] ?? "").replace(/\D/g, ""), 10) || 0;
-
-    if (!suppliesMap[id]) {
-      suppliesMap[id] = {
-        id, name, category: getCategory(id), unit: getUnit(id),
-        leadTimes: [], prices: [], lastPrice: 0, imports: [],
-      };
-    }
-
-    const entry = suppliesMap[id];
 
     if (ordered && arrived) {
       const lt = diffDays(ordered, arrived);
-      if (lt > 0 && lt < 500) entry.leadTimes.push(lt);
+      if (lt > 0 && lt < 500) {
+        if (!leadTimesMap[id]) leadTimesMap[id] = [];
+        leadTimesMap[id].push(lt);
+      }
     }
-    if (price > 0) {
-      entry.prices.push(price);
-      entry.lastPrice = price;
+    if (price > 0) priceMap[id] = price;
+  }
+
+  // ── 2. Sales history and inventory from ventas CSV ──
+  const ventasMap: Record<string, {
+    name: string;
+    category: string;
+    months: { yearMonth: string; year: number; month: number; qty: number }[];
+    latestInventory: number;
+    latestYearMonth: string;
+  }> = {};
+
+  for (const row of ventasRows) {
+    const id = row["COD. PRODUCTO"]?.trim();
+    const name = row["DESCRIPCION"]?.trim();
+    const year = parseInt(row["AÑO"], 10);
+    const month = parseInt(row["MES NUMERO"], 10);
+    if (!id || !name || isNaN(year) || isNaN(month)) continue;
+
+    const qty = parseQty(row["UNIDADES VENDIDAS"]);
+    const inv = parseInventory(row["INVENTARIO FINAL"]);
+    const yearMonth = `${year}-${String(month).padStart(2, "0")}`;
+
+    if (!ventasMap[id]) {
+      ventasMap[id] = {
+        name,
+        category: row["CATEGORIA"]?.trim() ?? getCategory(id),
+        months: [],
+        latestInventory: 0,
+        latestYearMonth: "",
+      };
     }
-    if (arrived && qty > 0) {
-      entry.imports.push({ date: toISO(arrived), quantity: qty });
+
+    const entry = ventasMap[id];
+    entry.months.push({ yearMonth, year, month, qty });
+
+    // Track most recent month's inventory
+    if (yearMonth > entry.latestYearMonth) {
+      entry.latestYearMonth = yearMonth;
+      entry.latestInventory = inv;
     }
   }
 
-  // Build supplies
-  const supplies = Object.values(suppliesMap).map((s) => {
-    const avgLT = s.leadTimes.length
-      ? Math.round(s.leadTimes.reduce((a, b) => a + b, 0) / s.leadTimes.length)
+  // ── 3. Build supplies list ──
+  const supplies = Object.entries(ventasMap).map(([id, v]) => {
+    const lts = leadTimesMap[id] ?? [];
+    const avgLT = lts.length
+      ? Math.round(lts.reduce((a, b) => a + b, 0) / lts.length)
       : 60;
+
     return {
-      id: s.id,
-      name: s.name,
-      category: s.category,
-      unit: s.unit,
+      id,
+      name: v.name,
+      category: v.category,
+      unit: getUnit(id),
       leadTimeDays: avgLT,
-      price: s.lastPrice,
+      price: priceMap[id] ?? 0,
     };
   }).sort((a, b) => a.id.localeCompare(b.id));
 
-  // Build history (one record per import arrival)
-  const history = Object.values(suppliesMap).flatMap((s) =>
-    s.imports.map((imp) => ({ date: imp.date, itemId: s.id, quantity: imp.quantity }))
+  // ── 4. Build history as monthly sales records ──
+  // date = first day of the month (YYYY-MM-01), quantity = UNIDADES VENDIDAS
+  const history = Object.entries(ventasMap).flatMap(([id, v]) =>
+    v.months.map((m) => ({
+      date: `${m.yearMonth}-01`,
+      itemId: id,
+      quantity: m.qty,
+    }))
   ).sort((a, b) => a.date.localeCompare(b.date));
 
-  // Build inventory: last import qty as stock proxy
-  const inventory = Object.values(suppliesMap).map((s) => {
-    const lastImport = s.imports.at(-1);
-    const totalImported = s.imports.reduce((acc, i) => acc + i.quantity, 0);
+  // ── 5. Build inventory using INVENTARIO FINAL from most recent month ──
+  const inventory = Object.entries(ventasMap).map(([id, v]) => {
+    // Monthly sales array sorted chronologically for stats
+    const sortedMonths = [...v.months].sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
+    const ventas_mensuales = sortedMonths.map((m) => m.qty);
+
     return {
-      itemId: s.id,
-      stock: lastImport?.quantity ?? 0,
+      itemId: id,
+      stock: v.latestInventory,
       onOrder: 0,
-      totalImported,
+      ventas_mensuales,         // real monthly sales for inventoryStats
+      latestYearMonth: v.latestYearMonth,
     };
   });
+
+  console.log(`Loaded ${supplies.length} products | ${history.length} monthly sales records`);
+  const withLeadTime = supplies.filter((s) => (leadTimesMap[s.id]?.length ?? 0) > 0).length;
+  console.log(`Lead times from importaciones: ${withLeadTime} products`);
 
   return { supplies, history, inventory };
 }
@@ -190,7 +258,6 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`Loaded ${supplies.length} products, ${history.length} import records`);
   });
 }
 
