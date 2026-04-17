@@ -1,7 +1,3 @@
-import { GoogleGenAI, Type } from "@google/genai";
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-
 export interface ForecastResult {
   itemId: string;
   predictedDemand: number;
@@ -17,42 +13,16 @@ export async function analyzeDemand(
   currentStock: number,
   leadTimeDays: number
 ): Promise<ForecastResult> {
-  const prompt = `
-    Analiza los datos históricos de ventas para el producto: ${item.name}.
-    Datos históricos (últimos 36 meses): ${JSON.stringify(history)}
-    Stock actual: ${currentStock}
-    Tiempo de entrega (Lead Time): ${leadTimeDays} días.
-    
-    Determina:
-    1. Demanda proyectada para los próximos 3 meses.
-    2. Si el negocio es estacional o cíclico basándote en los patrones.
-    3. Cuándo debería realizarse el próximo pedido para evitar quiebre de stock, considerando el lead time.
-    
-    Responde en formato JSON.
-  `;
-
-  const response = await ai.models.generateContent({
-    model: "gemini-flash-latest",
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          predictedDemand: { type: Type.NUMBER },
-          confidence: { type: Type.NUMBER },
-          reasoning: { type: Type.STRING },
-          isSeasonal: { type: Type.BOOLEAN },
-          recommendedOrderDate: { type: Type.STRING, description: "ISO Date string" },
-        },
-        required: ["predictedDemand", "confidence", "reasoning", "isSeasonal", "recommendedOrderDate"],
-      },
-    },
+  const res = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ item, history, currentStock, leadTimeDays }),
   });
 
-  const result = JSON.parse(response.text);
-  return {
-    itemId: item.id,
-    ...result
-  };
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error ?? "Error al analizar con AI");
+  }
+
+  return res.json();
 }
