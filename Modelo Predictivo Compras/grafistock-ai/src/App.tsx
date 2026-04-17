@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import Fuse from "fuse.js";
 import { 
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar 
 } from "recharts";
@@ -32,6 +33,7 @@ interface HistoryRecord {
   date: string;
   itemId: string;
   quantity: number;
+  inventario: number;
 }
 
 interface InventoryRecord {
@@ -39,6 +41,17 @@ interface InventoryRecord {
   stock: number;
   onOrder: number;
   ventas_mensuales?: number[];
+  inventario_mensual?: Record<string, number>;
+  in_transito?: Record<string, {cantidad:number; fechaOrden:string; fechaLlegada:string; proveedor:string}[]>;
+}
+
+// Parse "dd-MM-yy" → "YYYY-MM"
+function getYearMonth(fechaOrden: string): string {
+  const parts = fechaOrden?.split("-");
+  if (!parts || parts.length !== 3) return "";
+  const [, month, yr] = parts;
+  const year = yr.length === 2 ? "20" + yr : yr;
+  return `${year}-${month.padStart(2, "0")}`;
 }
 
 export default function App() {
@@ -49,6 +62,7 @@ export default function App() {
   const [forecasts, setForecasts] = useState<Record<string, ForecastResult>>({});
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isAnalysisOpen, setIsAnalysisOpen] = useState(false);
+  const [orderPopup, setOrderPopup] = useState<{date: string; orders: {cantidad:number; fechaOrden:string; fechaLlegada:string; proveedor:string}[]} | null>(null);
   
   // Data Cleaning State
   const [csvInput, setCsvInput] = useState("");
@@ -56,6 +70,25 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [selectedMasterProducts, setSelectedMasterProducts] = useState<string[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+
+  const fuse = useMemo(() => new Fuse(supplies, {
+    keys: [{ name: "name", weight: 0.7 }, { name: "id", weight: 0.3 }],
+    threshold: 0.35,
+    minMatchCharLength: 2,
+    includeScore: true,
+  }), [supplies]);
+
+  const filteredSupplies = useMemo(() => {
+    if (!searchTerm.trim()) return supplies;
+    return fuse.search(searchTerm).map(r => r.item);
+  }, [searchTerm, fuse, supplies]);
+
+  const suggestions = useMemo(() => {
+    if (searchTerm.length < 4) return [];
+    return fuse.search(searchTerm, { limit: 7 }).map(r => r.item);
+  }, [searchTerm, fuse]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -133,63 +166,57 @@ export default function App() {
 
     if (monthlyData.length === 0) return [];
 
-    // Stock simulation: start from a reasonable proxy and work backwards
+    const invMap = currentInv?.inventario_mensual ?? {};
+    const inTransitoMap = currentInv?.in_transito ?? {};
+
+    // Parámetros para Pedido Sugerido
     const leadTimeMonths = Math.ceil((currentItem?.leadTimeDays || 60) / 30);
-    const avgMonthly = monthlyData.reduce((a, b) => a + b.quantity, 0) / monthlyData.length;
-    const reorderThreshold = Math.round(avgMonthly * leadTimeMonths * 1.2);
-    const reorderQty = Math.round(avgMonthly * (leadTimeMonths + 3));
+    const avgMonthly = monthlyData.reduce((a, b) => a + b.quantity, 0) / (monthlyData.length || 1);
+    const reorderPoint = Math.round(avgMonthly * leadTimeMonths * 1.25);
+    const suggestedQty = Math.round(avgMonthly * (leadTimeMonths + 3));
 
-    let runningStock = currentInv?.stock ?? Math.round(avgMonthly * 4);
-    // Reconstruct backwards to estimate starting stock
-    let totalConsumed = monthlyData.reduce((a, b) => a + b.quantity, 0);
-    runningStock = Math.max(runningStock, Math.round(totalConsumed * 0.15));
-
-    let pendingArrivals: { monthIndex: number; quantity: number }[] = [];
-
-    const dataWithStock = monthlyData.map((m, index) => {
-      const arrivals = pendingArrivals.filter(p => p.monthIndex === index);
-      arrivals.forEach(a => { runningStock += a.quantity; });
-      pendingArrivals = pendingArrivals.filter(p => p.monthIndex !== index);
-
-      const stockBeforeSales = runningStock;
-      runningStock = Math.max(0, runningStock - m.quantity);
-
-      let onOrder = 0;
-      let suggestedOrder = 0;
-      const hasPending = pendingArrivals.length > 0;
-
-      if (runningStock < reorderThreshold && !hasPending) {
-        suggestedOrder = reorderQty;
-        pendingArrivals.push({ monthIndex: index + leadTimeMonths, quantity: reorderQty });
-      } else if (hasPending) {
-        onOrder = reorderQty;
-      }
-
-      return { ...m, stock: stockBeforeSales, onOrder, suggestedOrder };
-    });
-
-    return dataWithStock.map((m, index) => {
-      const last4 = dataWithStock.slice(Math.max(0, index - 3), index + 1);
+    return monthlyData.map((m, index) => {
+      const last4 = monthlyData.slice(Math.max(0, index - 3), index + 1);
       const sma4 = last4.reduce((a, b) => a + b.quantity, 0) / last4.length;
 
-      const last12 = dataWithStock.slice(Math.max(0, index - 11), index + 1);
+      const last12 = monthlyData.slice(Math.max(0, index - 11), index + 1);
       const sma12 = last12.reduce((a, b) => a + b.quantity, 0) / last12.length;
 
-      // Format date as "Ene 23" for readability
       const d = new Date(m.date + "T12:00:00");
       const label = d.toLocaleDateString("es-CO", { month: "short", year: "2-digit" });
 
+      const stockVal = invMap[m.date] ?? 0;
+      const ordersInTransit = inTransitoMap[m.date] ?? [];
+      const currentYM = m.date.substring(0, 7); // "YYYY-MM"
+
+      // Pedido nuevo: colocado ESTE mes (primer mes en tránsito) → amarillo
+      const pedidoNuevo = ordersInTransit
+        .filter((o: any) => getYearMonth(o.fechaOrden) === currentYM)
+        .reduce((s: number, o: any) => s + o.cantidad, 0);
+
+      // Pedido en tránsito: colocado meses anteriores → verde
+      const pedidoTransito = ordersInTransit
+        .filter((o: any) => getYearMonth(o.fechaOrden) !== currentYM)
+        .reduce((s: number, o: any) => s + o.cantidad, 0);
+
+      const totalPedido = pedidoNuevo + pedidoTransito;
+      const pedidoSugerido = stockVal > 0 && stockVal < reorderPoint && totalPedido === 0
+        ? suggestedQty
+        : 0;
+
       return {
         date: label,
+        isoDate: m.date,
         quantity: m.quantity,
-        stock: m.stock,
-        onOrder: m.onOrder,
-        suggestedOrder: m.suggestedOrder,
+        stock: stockVal,
+        pedidoTransito,
+        pedidoNuevo,
+        pedidoSugerido,
         sma4: Number(sma4.toFixed(0)),
         sma12: Number(sma12.toFixed(0)),
       };
     });
-  }, [selectedItem, history, currentItem, currentInv]);
+  }, [selectedItem, history, currentInv]);
 
   const analysisData = useMemo(() => {
     if (!selectedItem || !currentItem) return null;
@@ -275,22 +302,47 @@ export default function App() {
                       <Package className="w-4 h-4 text-orange-600" />
                       Catálogo de Insumos
                     </CardTitle>
-                    <div className="relative mt-2">
-                      <Search className="absolute left-2 top-2.5 h-3 w-3 text-gray-400" />
+                    <div className="relative mt-2" ref={searchRef}>
+                      <Search className="absolute left-2 top-2.5 h-3 w-3 text-gray-400 z-10" />
                       <input
                         type="text"
-                        placeholder="Filtrar insumos..."
+                        value={searchTerm}
+                        placeholder="Buscar por nombre o SKU..."
                         className="w-full pl-8 pr-4 py-2 text-xs border border-gray-200 rounded-md focus:ring-1 focus:ring-orange-500 outline-none"
-                        onChange={(e) => setSearchTerm(e.target.value)}
+                        onChange={(e) => { setSearchTerm(e.target.value); setShowSuggestions(true); }}
+                        onFocus={() => setShowSuggestions(true)}
+                        onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
                       />
+                      {searchTerm && (
+                        <button
+                          className="absolute right-2 top-2 text-gray-300 hover:text-gray-500"
+                          onMouseDown={() => { setSearchTerm(""); setShowSuggestions(false); }}
+                        >✕</button>
+                      )}
+                      {showSuggestions && suggestions.length > 0 && (
+                        <div className="absolute z-30 w-full bg-white border border-gray-200 rounded-md shadow-lg mt-1 max-h-56 overflow-auto">
+                          {suggestions.map(s => (
+                            <button
+                              key={s.id}
+                              className="w-full text-left px-3 py-2 hover:bg-orange-50 transition-colors border-b border-gray-50 last:border-0"
+                              onMouseDown={() => {
+                                setSearchTerm(s.name);
+                                setSelectedItem(s.id);
+                                setShowSuggestions(false);
+                              }}
+                            >
+                              <p className="text-xs font-medium text-gray-800 truncate">{s.name}</p>
+                              <p className="text-[10px] text-gray-400 font-mono">{s.id} · {s.category}</p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </CardHeader>
                   <CardContent className="p-0">
                     <ScrollArea className="h-[calc(100vh-340px)]">
                       <div className="divide-y divide-gray-100">
-                        {supplies
-                          .filter(item => item.name.toLowerCase().includes(searchTerm.toLowerCase()))
-                          .map((item) => (
+                        {filteredSupplies.map((item) => (
                           <button
                             key={item.id}
                             onClick={() => setSelectedItem(item.id)}
@@ -299,14 +351,18 @@ export default function App() {
                             }`}
                           >
                             <div className="flex justify-between items-start mb-1">
-                              <span className={`font-medium text-sm truncate ${selectedItem === item.id ? "text-orange-900" : ""}`}>
+                              <span className={`font-medium text-xs truncate ${selectedItem === item.id ? "text-orange-900" : ""}`}>
                                 {item.name}
                               </span>
                               <Badge variant="secondary" className="text-[10px] uppercase font-bold shrink-0 ml-2">
                                 {item.category}
                               </Badge>
                             </div>
-                            <div className="flex items-center gap-2 text-xs text-gray-500">
+                            <div className="flex items-center gap-1 text-[10px] text-gray-400 font-mono mb-1">
+                              <Package className="w-3 h-3" />
+                              <span>SKU: {item.id}</span>
+                            </div>
+                            <div className="flex items-center gap-1 text-[10px] text-gray-500">
                               <Ship className="w-3 h-3" />
                               <span>Lead Time: {item.leadTimeDays} días</span>
                             </div>
@@ -420,73 +476,110 @@ export default function App() {
                             <ResponsiveContainer width="100%" height="100%">
                               <ComposedChart data={chartData}>
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
-                                <XAxis 
-                                  dataKey="date" 
-                                  axisLine={false} 
-                                  tickLine={false} 
+                                <XAxis
+                                  dataKey="date"
+                                  axisLine={false}
+                                  tickLine={false}
                                   tick={{ fontSize: 10, fill: '#6B7280' }}
                                   dy={10}
                                 />
-                                <YAxis 
-                                  axisLine={false} 
-                                  tickLine={false} 
-                                  tick={{ fontSize: 12, fill: '#6B7280' }}
+                                {/* Eje izquierdo: ventas (escala pequeña) */}
+                                <YAxis
+                                  yAxisId="ventas"
+                                  orientation="left"
+                                  axisLine={false}
+                                  tickLine={false}
+                                  tick={{ fontSize: 11, fill: '#EA580C' }}
+                                  label={{ value: 'Ventas', angle: -90, position: 'insideLeft', offset: 10, style: { fontSize: 10, fill: '#EA580C' } }}
                                 />
-                                <Tooltip 
+                                {/* Eje derecho: inventario (escala grande) */}
+                                <YAxis
+                                  yAxisId="inventario"
+                                  orientation="right"
+                                  axisLine={false}
+                                  tickLine={false}
+                                  tick={{ fontSize: 11, fill: '#1E3A8A' }}
+                                  label={{ value: 'Stock', angle: 90, position: 'insideRight', offset: 10, style: { fontSize: 10, fill: '#1E3A8A' } }}
+                                />
+                                <Tooltip
                                   contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
                                 />
-                                <Legend verticalAlign="top" height={36}/>
-                                
-                                {/* Inventory Bars (Stacked) */}
-                                <Bar 
-                                  dataKey="stock" 
-                                  name="Stock en Mano" 
-                                  stackId="inv" 
-                                  fill="#1E3A8A" 
-                                  opacity={0.8} 
+                                <Legend verticalAlign="top" height={36} />
+
+                                {/* Barras de inventario — eje derecho */}
+                                <Bar
+                                  yAxisId="inventario"
+                                  dataKey="stock"
+                                  name="Stock en Mano"
+                                  stackId="inv"
+                                  fill="#93C5FD"
+                                  opacity={0.8}
                                 />
-                                <Bar 
-                                  dataKey="onOrder" 
-                                  name="En Tránsito" 
-                                  stackId="inv" 
-                                  fill="#93C5FD" 
-                                  opacity={0.8} 
+                                <Bar
+                                  yAxisId="inventario"
+                                  dataKey="pedidoTransito"
+                                  name="En Tránsito"
+                                  stackId="inv"
+                                  fill="#4ADE80"
+                                  opacity={0.65}
+                                  cursor="pointer"
+                                  onClick={(data: any) => {
+                                    const orders = currentInv?.in_transito?.[data.isoDate];
+                                    if (orders?.length) setOrderPopup({ date: data.date, orders });
+                                  }}
                                 />
-                                <Bar 
-                                  dataKey="suggestedOrder" 
-                                  name="Pedido Sugerido" 
-                                  stackId="inv" 
-                                  fill="#FCA5A5" 
-                                  opacity={0.9}
+                                <Bar
+                                  yAxisId="inventario"
+                                  dataKey="pedidoNuevo"
+                                  name="Nuevo Pedido"
+                                  stackId="inv"
+                                  fill="#FDE68A"
+                                  opacity={0.85}
+                                  cursor="pointer"
+                                  onClick={(data: any) => {
+                                    const orders = currentInv?.in_transito?.[data.isoDate];
+                                    if (orders?.length) setOrderPopup({ date: data.date, orders });
+                                  }}
+                                />
+                                <Bar
+                                  yAxisId="inventario"
+                                  dataKey="pedidoSugerido"
+                                  name="Pedido Sugerido"
+                                  stackId="inv"
+                                  fill="#F87171"
+                                  opacity={0.6}
                                   onClick={() => setIsAnalysisOpen(true)}
                                   cursor="pointer"
                                 />
 
-                                {/* Demand Lines */}
+                                {/* Líneas de ventas — eje izquierdo */}
                                 <Line
+                                  yAxisId="ventas"
                                   type="monotone"
                                   dataKey="quantity"
                                   name="Venta Mensual"
-                                  stroke="#EA580C" 
-                                  strokeWidth={3} 
+                                  stroke="#EA580C"
+                                  strokeWidth={3}
                                   dot={{ r: 3, fill: '#EA580C' }}
                                   activeDot={{ r: 5, strokeWidth: 0 }}
                                 />
-                                <Line 
-                                  type="monotone" 
-                                  dataKey="sma4" 
+                                <Line
+                                  yAxisId="ventas"
+                                  type="monotone"
+                                  dataKey="sma4"
                                   name="Tendencia Mensual"
-                                  stroke="#3B82F6" 
-                                  strokeWidth={2} 
+                                  stroke="#3B82F6"
+                                  strokeWidth={2}
                                   strokeDasharray="5 5"
                                   dot={false}
                                 />
-                                <Line 
-                                  type="monotone" 
-                                  dataKey="sma12" 
+                                <Line
+                                  yAxisId="ventas"
+                                  type="monotone"
+                                  dataKey="sma12"
                                   name="Tendencia Trimestral"
-                                  stroke="#8B5CF6" 
-                                  strokeWidth={2} 
+                                  stroke="#8B5CF6"
+                                  strokeWidth={2}
                                   strokeDasharray="3 3"
                                   dot={false}
                                 />
@@ -711,6 +804,57 @@ export default function App() {
                           <div className="mt-6 pt-4 border-t border-gray-100 flex justify-end gap-3">
                             <Button variant="outline" onClick={() => setIsAnalysisOpen(false)}>Cerrar</Button>
                             <Button className="bg-orange-600 hover:bg-orange-700 text-white">Generar Orden de Compra</Button>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+
+                      {/* Popup: Detalle de Pedido Realizado */}
+                      <Dialog open={!!orderPopup} onOpenChange={() => setOrderPopup(null)}>
+                        <DialogContent className="max-w-md">
+                          <DialogHeader>
+                            <DialogTitle className="flex items-center gap-2 text-base">
+                              <Ship className="w-4 h-4 text-green-600" />
+                              Stock en Tránsito — {orderPopup?.date}
+                            </DialogTitle>
+                          </DialogHeader>
+                          <div className="space-y-3 mt-2">
+                            {orderPopup && (() => {
+                              const popupYM = orderPopup.date; // formatted label e.g. "nov de 23"
+                              // Find the isoDate from chartData to determine currentYM
+                              const chartPoint = chartData.find(d => d.date === popupYM);
+                              const currentYM = chartPoint?.isoDate?.substring(0, 7) ?? "";
+                              return orderPopup.orders.map((o, i) => {
+                                const isNew = getYearMonth(o.fechaOrden) === currentYM;
+                                return (
+                                  <div key={i} className={`rounded-lg p-4 space-y-2 border ${isNew ? "bg-yellow-50 border-yellow-200" : "bg-green-50 border-green-100"}`}>
+                                    {isNew && (
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <span className="bg-yellow-400 text-yellow-900 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide">Nuevo Pedido</span>
+                                      </div>
+                                    )}
+                                    <div className="flex justify-between text-sm">
+                                      <span className="text-gray-500">Proveedor</span>
+                                      <span className="font-semibold text-gray-800 text-right max-w-[60%]">{o.proveedor}</span>
+                                    </div>
+                                    <div className="flex justify-between text-sm">
+                                      <span className="text-gray-500">Fecha de Orden</span>
+                                      <span className="font-semibold text-gray-800">{o.fechaOrden}</span>
+                                    </div>
+                                    <div className="flex justify-between text-sm">
+                                      <span className="text-gray-500">Fecha de Llegada</span>
+                                      <span className={`font-semibold ${isNew ? "text-yellow-700" : "text-blue-700"}`}>{o.fechaLlegada}</span>
+                                    </div>
+                                    <div className={`flex justify-between text-sm border-t pt-2 ${isNew ? "border-yellow-200" : "border-green-200"}`}>
+                                      <span className="text-gray-500">Cantidad Pedida</span>
+                                      <span className={`font-bold text-base ${isNew ? "text-yellow-700" : "text-green-700"}`}>{o.cantidad} {currentItem?.unit}s</span>
+                                    </div>
+                                  </div>
+                                );
+                              });
+                            })()}
+                          </div>
+                          <div className="flex justify-end mt-4">
+                            <Button variant="outline" onClick={() => setOrderPopup(null)}>Cerrar</Button>
                           </div>
                         </DialogContent>
                       </Dialog>

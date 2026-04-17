@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
@@ -119,9 +120,11 @@ function buildData() {
   const importRows = loadImportaciones();
   const ventasRows = loadVentas();
 
-  // ── 1. Lead times from importaciones ──
+  // ── 1. Lead times + pedidos reales desde importaciones ──
   const leadTimesMap: Record<string, number[]> = {};
   const priceMap: Record<string, number> = {};
+  // inTransitoMap[id][YYYY-MM-01] = órdenes en tránsito ESE mes (desde orden hasta mes previo a llegada)
+  const inTransitoMap: Record<string, Record<string, {cantidad:number; fechaOrden:string; fechaLlegada:string; proveedor:string}[]>> = {};
 
   for (const row of importRows) {
     const id = row.CODIGO?.trim();
@@ -130,6 +133,7 @@ function buildData() {
     const ordered = parseDate(row["FECHA ORDEN DE COMPRA"]);
     const arrived = parseDate(row["FECHA DE LLEGADA"]);
     const price = parseInt((row[" COSTO UNITARIO  "] ?? "").replace(/\D/g, ""), 10) || 0;
+    const qty = parseInt((row[" CANTIDAD "] ?? "").replace(/\D/g, ""), 10) || 0;
 
     if (ordered && arrived) {
       const lt = diffDays(ordered, arrived);
@@ -139,6 +143,27 @@ function buildData() {
       }
     }
     if (price > 0) priceMap[id] = price;
+
+    // Marcar como en tránsito para cada mes desde la orden hasta el mes anterior a la llegada
+    if (ordered && arrived && qty > 0) {
+      const orderDetail = {
+        cantidad: qty,
+        fechaOrden: row["FECHA ORDEN DE COMPRA"],
+        fechaLlegada: row["FECHA DE LLEGADA"],
+        proveedor: row["NOMBRE PROVEEDOR"],
+      };
+      if (!inTransitoMap[id]) inTransitoMap[id] = {};
+
+      const cursor = new Date(ordered.getFullYear(), ordered.getMonth(), 1);
+      const arrivalMonth = new Date(arrived.getFullYear(), arrived.getMonth(), 1);
+
+      while (cursor < arrivalMonth) {
+        const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}-01`;
+        if (!inTransitoMap[id][key]) inTransitoMap[id][key] = [];
+        inTransitoMap[id][key].push(orderDetail);
+        cursor.setMonth(cursor.getMonth() + 1);
+      }
+    }
   }
 
   // ── 2. Sales history and inventory from ventas CSV ──
@@ -172,7 +197,7 @@ function buildData() {
     }
 
     const entry = ventasMap[id];
-    entry.months.push({ yearMonth, year, month, qty });
+    entry.months.push({ yearMonth, year, month, qty, inv });
 
     // Track most recent month's inventory
     if (yearMonth > entry.latestYearMonth) {
@@ -198,13 +223,13 @@ function buildData() {
     };
   }).sort((a, b) => a.id.localeCompare(b.id));
 
-  // ── 4. Build history as monthly sales records ──
-  // date = first day of the month (YYYY-MM-01), quantity = UNIDADES VENDIDAS
+  // ── 4. Build history as monthly sales records (includes real inventory) ──
   const history = Object.entries(ventasMap).flatMap(([id, v]) =>
     v.months.map((m) => ({
       date: `${m.yearMonth}-01`,
       itemId: id,
       quantity: m.qty,
+      inventario: m.inv,
     }))
   ).sort((a, b) => a.date.localeCompare(b.date));
 
@@ -213,12 +238,18 @@ function buildData() {
     // Monthly sales array sorted chronologically for stats
     const sortedMonths = [...v.months].sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
     const ventas_mensuales = sortedMonths.map((m) => m.qty);
+    const inventario_mensual: Record<string, number> = {};
+    sortedMonths.forEach((m) => {
+      inventario_mensual[`${m.yearMonth}-01`] = m.inv;
+    });
 
     return {
       itemId: id,
       stock: v.latestInventory,
       onOrder: 0,
-      ventas_mensuales,         // real monthly sales for inventoryStats
+      ventas_mensuales,
+      inventario_mensual,
+      in_transito: inTransitoMap[id] ?? {},
       latestYearMonth: v.latestYearMonth,
     };
   });
@@ -241,6 +272,55 @@ async function startServer() {
   app.get("/api/supplies", (_req, res) => res.json(supplies));
   app.get("/api/history", (_req, res) => res.json(history));
   app.get("/api/inventory", (_req, res) => res.json(inventory));
+
+  app.post("/api/analyze", async (req, res) => {
+    const { item, history: itemHistory, currentStock, leadTimeDays } = req.body;
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey || apiKey === "your_new_key_here") {
+      return res.status(400).json({ error: "ANTHROPIC_API_KEY no configurada en .env" });
+    }
+    try {
+      const prompt = `Analiza los datos históricos de ventas mensuales para el producto: ${item.name}.
+Ventas por mes (cronológico): ${JSON.stringify(itemHistory)}
+Stock actual: ${currentStock}
+Lead Time: ${leadTimeDays} días.
+
+Responde ÚNICAMENTE con un JSON válido, sin texto adicional, con esta estructura exacta:
+{
+  "predictedDemand": <número entero: demanda promedio proyectada próximos 3 meses>,
+  "confidence": <número entre 0 y 1>,
+  "reasoning": <string en español: análisis del patrón de demanda en máximo 3 oraciones>,
+  "isSeasonal": <true o false>,
+  "recommendedOrderDate": <string ISO fecha recomendada para próximo pedido>
+}`;
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 512,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+
+      const data = await response.json() as any;
+      if (!response.ok) throw new Error(data.error?.message ?? response.statusText);
+
+      let text = data.content?.[0]?.text ?? "{}";
+      // Strip markdown code fences if present
+      text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+      const result = JSON.parse(text);
+      res.json({ itemId: item.id, ...result });
+    } catch (err: any) {
+      console.error("Claude error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
