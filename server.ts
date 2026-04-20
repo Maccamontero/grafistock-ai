@@ -170,7 +170,7 @@ function buildData() {
   const ventasMap: Record<string, {
     name: string;
     category: string;
-    months: { yearMonth: string; year: number; month: number; qty: number }[];
+    months: { yearMonth: string; year: number; month: number; qty: number; inv: number; estado?: string; demanda_adj?: number; fuente_adj?: string }[];
     latestInventory: number;
     latestYearMonth: string;
   }> = {};
@@ -206,6 +206,520 @@ function buildData() {
     }
   }
 
+  // ── 2.5. Clasificar cada mes por SKU → columna ESTADO ──
+  const estadoCounts: Record<string, number> = {
+    NORMAL: 0, QUIEBRE: 0, QUIEBRE_PROBABLE: 0, QUIEBRE_ARRASTRE: 0, SIN_DEMANDA: 0,
+  };
+
+  for (const v of Object.values(ventasMap)) {
+    // Ordenar cronológicamente antes de clasificar
+    v.months.sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
+
+    // Promedio histórico bruto del SKU (todos los meses, incluyendo ceros)
+    const avgHistorico =
+      v.months.reduce((s, m) => s + m.qty, 0) / (v.months.length || 1);
+
+    for (let i = 0; i < v.months.length; i++) {
+      const m = v.months[i];
+      const invFinal = m.inv;
+      const ventas = m.qty;
+      // Inventario inicial = inventario final del mes anterior; desconocido en el primer mes
+      const invInicial = i > 0 ? v.months[i - 1].inv : null;
+
+      let estado: string;
+
+      if (ventas === 0 && invFinal === 0) {
+        estado = "QUIEBRE_ARRASTRE";
+      } else if (ventas === 0 && invInicial !== null && invInicial > 0) {
+        estado = "SIN_DEMANDA";
+      } else if (invFinal === 0 && ventas > 0 && ventas < avgHistorico * 0.7) {
+        estado = "QUIEBRE";
+      } else if (invFinal === 0 && ventas > 0) {
+        estado = "QUIEBRE_PROBABLE";
+      } else {
+        estado = "NORMAL";
+      }
+
+      m.estado = estado;
+      estadoCounts[estado] = (estadoCounts[estado] ?? 0) + 1;
+    }
+  }
+
+  console.log("── Clasificación ESTADO ──────────────────");
+  for (const [estado, count] of Object.entries(estadoCounts)) {
+    console.log(`  ${estado.padEnd(20)} ${count.toString().padStart(5)} registros`);
+  }
+  const total = Object.values(estadoCounts).reduce((a, b) => a + b, 0);
+  console.log(`  ${"TOTAL".padEnd(20)} ${total.toString().padStart(5)} registros`);
+  console.log("──────────────────────────────────────────");
+
+  // Diagnóstico SKU 112021 — validar QUIEBRE_ARRASTRE en 2023
+  const sku112021 = ventasMap["112021"];
+  if (sku112021) {
+    console.log("── Diagnóstico SKU 112021 (2023) ─────────");
+    sku112021.months
+      .filter(m => m.yearMonth.startsWith("2023"))
+      .forEach(m => {
+        console.log(`  ${m.yearMonth}  ventas=${String(m.qty).padStart(4)}  inv=${String(m.inv).padStart(5)}  → ${m.estado}`);
+      });
+    console.log("──────────────────────────────────────────");
+  }
+
+  // ── 2.6. Calcular DEMANDA_ADJ con cascada de fallbacks ────────────────────
+  const QUIEBRE_ESTADOS = new Set(["QUIEBRE", "QUIEBRE_PROBABLE", "QUIEBRE_ARRASTRE"]);
+  const fuenteCounts: Record<string, number> = {
+    ORIGINAL: 0, SIN_DEMANDA: 0,
+    IMPUTADO_PREVIO: 0, IMPUTADO_POSTERIOR: 0, IMPUTADO_GLOBAL: 0, SIN_BASE: 0,
+  };
+  let sumOriginal = 0;
+  let sumAdjusted = 0;
+
+  for (const v of Object.values(ventasMap)) {
+    // v.months ya ordenado cronológicamente desde paso 2.5
+
+    // Pre-computar: índices y valores de todos los meses NORMAL del SKU
+    const allNormalByIndex: { idx: number; qty: number }[] = [];
+    v.months.forEach((m, idx) => {
+      if (m.estado === "NORMAL") allNormalByIndex.push({ idx, qty: m.qty });
+    });
+    const globalNormalAvg = allNormalByIndex.length > 0
+      ? Math.round(allNormalByIndex.reduce((s, n) => s + n.qty, 0) / allNormalByIndex.length)
+      : null;
+
+    const normalWindow: number[] = []; // ventana deslizante de NORMAL previos
+
+    for (let i = 0; i < v.months.length; i++) {
+      const m = v.months[i];
+      const estado = m.estado ?? "NORMAL";
+      sumOriginal += m.qty;
+
+      if (!QUIEBRE_ESTADOS.has(estado)) {
+        m.demanda_adj = m.qty;
+        m.fuente_adj = estado === "NORMAL" ? "ORIGINAL" : "SIN_DEMANDA";
+        if (estado === "NORMAL") normalWindow.push(m.qty);
+      } else {
+        if (normalWindow.length > 0) {
+          // Fallback 0: promedio de hasta 3 NORMAL previos
+          const window = normalWindow.slice(-3);
+          m.demanda_adj = Math.round(window.reduce((a, b) => a + b, 0) / window.length);
+          m.fuente_adj = "IMPUTADO_PREVIO";
+        } else {
+          // Fallback 1: primeros 3 meses NORMAL posteriores al mes evaluado
+          const posterior = allNormalByIndex
+            .filter(n => n.idx > i)
+            .slice(0, 3)
+            .map(n => n.qty);
+
+          if (posterior.length >= 3) {
+            m.demanda_adj = Math.round(posterior.reduce((a, b) => a + b, 0) / posterior.length);
+            m.fuente_adj = "IMPUTADO_POSTERIOR";
+          } else if (globalNormalAvg !== null) {
+            // Fallback 2: promedio global de todos los NORMAL del SKU
+            m.demanda_adj = globalNormalAvg;
+            m.fuente_adj = "IMPUTADO_GLOBAL";
+          } else {
+            // Fallback 3: sin ningún mes NORMAL → SIN_BASE
+            m.demanda_adj = m.qty;
+            m.fuente_adj = "SIN_BASE";
+          }
+        }
+      }
+
+      sumAdjusted += m.demanda_adj!;
+      fuenteCounts[m.fuente_adj!] = (fuenteCounts[m.fuente_adj!] ?? 0) + 1;
+    }
+  }
+
+  const demandaPerdida = sumAdjusted - sumOriginal;
+  console.log("── DEMANDA_ADJ — Fuentes ─────────────────");
+  for (const [fuente, count] of Object.entries(fuenteCounts)) {
+    console.log(`  ${fuente.padEnd(22)} ${count.toString().padStart(5)} registros`);
+  }
+  console.log(`  ${"TOTAL".padEnd(22)} ${Object.values(fuenteCounts).reduce((a,b)=>a+b,0).toString().padStart(5)} registros`);
+  console.log("──────────────────────────────────────────");
+  console.log(`  Suma ventas originales        ${sumOriginal.toString().padStart(7)}`);
+  console.log(`  Suma DEMANDA_ADJ              ${sumAdjusted.toString().padStart(7)}`);
+  console.log(`  Demanda perdida estimada      ${demandaPerdida.toString().padStart(7)} unidades`);
+  console.log("──────────────────────────────────────────");
+
+  // Diagnóstico SKU 112021 — esperar IMPUTADO_POSTERIOR ~22 unidades
+  const sku112021b = ventasMap["112021"];
+  if (sku112021b) {
+    console.log("── Diagnóstico SKU 112021 (2023) ─────────");
+    console.log("  MES       VENTAS  ESTADO               ADJ  FUENTE");
+    sku112021b.months
+      .filter(m => m.yearMonth.startsWith("2023"))
+      .forEach(m => {
+        console.log(`  ${m.yearMonth}   ${String(m.qty).padStart(4)}  ${(m.estado ?? "").padEnd(20)} ${String(m.demanda_adj).padStart(4)}  ${m.fuente_adj}`);
+      });
+    console.log("──────────────────────────────────────────");
+  }
+
+  // Diagnóstico SKU 112016 — esperar IMPUTADO_POSTERIOR ene-abr
+  const sku112016 = ventasMap["112016"];
+  if (sku112016) {
+    console.log("── Diagnóstico SKU 112016 (2023) ─────────");
+    console.log("  MES       VENTAS  ESTADO               ADJ  FUENTE");
+    sku112016.months
+      .filter(m => m.yearMonth.startsWith("2023"))
+      .forEach(m => {
+        console.log(`  ${m.yearMonth}   ${String(m.qty).padStart(4)}  ${(m.estado ?? "").padEnd(20)} ${String(m.demanda_adj).padStart(4)}  ${m.fuente_adj}`);
+      });
+    console.log("──────────────────────────────────────────");
+  }
+
+  // ── 2.7b. Análisis de estacionalidad con DEMANDA_ADJ ──────────────────────
+  const MN = ["","Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+
+  // Helper: dado un subconjunto de meses del ventasMap, calcula demanda mensual
+  // promediada por número de años con datos en ese mes calendario
+  function calcSeasonality(entries: typeof ventasMap[string][]) {
+    // sum[mes] = suma DEMANDA_ADJ, years[mes] = set de años
+    const sum: Record<number,number> = {};
+    const years: Record<number,Set<number>> = {};
+    for (let m = 1; m <= 12; m++) { sum[m] = 0; years[m] = new Set(); }
+
+    for (const v of entries) {
+      for (const m of v.months) {
+        if (m.month < 1 || m.month > 12) continue;
+        sum[m.month] += m.demanda_adj ?? m.qty;
+        years[m.month].add(m.year);
+      }
+    }
+    const avg: Record<number,number> = {};
+    for (let m = 1; m <= 12; m++) {
+      avg[m] = years[m].size > 0 ? sum[m] / years[m].size : 0;
+    }
+    return avg;
+  }
+
+  function printSeasonality(label: string, avg: Record<number,number>) {
+    const max = Math.max(...Object.values(avg));
+    const sorted = Object.entries(avg)
+      .map(([m, v]) => ({ m: Number(m), v }))
+      .sort((a, b) => b.v - a.v);
+    console.log(`  ── ${label}`);
+    for (const { m, v } of sorted) {
+      const bar = "█".repeat(Math.round((v / max) * 12));
+      console.log(`     ${MN[m].padEnd(4)} ${v.toFixed(0).padStart(6)}  ${bar}`);
+    }
+  }
+
+  const allEntries    = Object.values(ventasMap);
+  const bolsillos     = allEntries.filter(v => v.months[0]?.yearMonth && ventasMap[Object.keys(ventasMap).find(k => ventasMap[k] === v)!]?.name && Object.keys(ventasMap).find(k => ventasMap[k] === v)!.startsWith("113"));
+  const caratulas     = allEntries.filter((_, i) => Object.keys(ventasMap)[i].startsWith("121"));
+  const bopp          = allEntries.filter((_, i) => Object.keys(ventasMap)[i].startsWith("112"));
+
+  // Reconstruir por prefijo más limpio
+  const byPrefix = (prefix: string) =>
+    Object.entries(ventasMap).filter(([id]) => id.startsWith(prefix)).map(([,v]) => v);
+
+  const seasonAll  = calcSeasonality(allEntries);
+  const season113  = calcSeasonality(byPrefix("113"));
+  const season121  = calcSeasonality(byPrefix("121"));
+  const season112  = calcSeasonality(byPrefix("112"));
+
+  console.log("── Estacionalidad — Portafolio completo ──");
+  printSeasonality("Portafolio completo (DEMANDA_ADJ)", seasonAll);
+  console.log("──────────────────────────────────────────");
+  printSeasonality("Bolsillos 113xxx", season113);
+  console.log("──────────────────────────────────────────");
+  printSeasonality("Carátulas 121xxx", season121);
+  console.log("──────────────────────────────────────────");
+  printSeasonality("BOPP 112xxx", season112);
+  console.log("──────────────────────────────────────────");
+
+  // Último mes del histórico y rango last-3
+  const allYearMonths = allEntries.flatMap(v => v.months.map(m => m.yearMonth));
+  const lastYM = allYearMonths.sort().slice(-1)[0]; // "YYYY-MM"
+  const [lastY, lastM] = lastYM.split("-").map(Number);
+  const last3YMs: string[] = [];
+  for (let i = 2; i >= 0; i--) {
+    let y = lastY, mo = lastM - i;
+    if (mo <= 0) { mo += 12; y -= 1; }
+    last3YMs.push(`${y}-${String(mo).padStart(2,"0")}`);
+  }
+  console.log(`  Último mes en el archivo:  ${lastYM}`);
+  console.log(`  Últimos 3 meses (70/30):   ${last3YMs.join("  ")}`);
+  console.log("──────────────────────────────────────────");
+
+  // Cruce: últimos 3 meses de SKUs clave vs estacionalidad de su categoría
+  const skusCruce = ["113005","121023","113002"];
+  for (const skuId of skusCruce) {
+    const v = ventasMap[skuId];
+    if (!v) continue;
+    const last3 = v.months.slice(-3);
+    // índice estacional de su categoría
+    const prefix = skuId.substring(0,3);
+    const catSeason = prefix === "113" ? season113 : prefix === "121" ? season121 : seasonAll;
+    const catAvg = Object.values(catSeason).reduce((a,b)=>a+b,0)/12;
+    console.log(`  SKU ${skuId} — últimos 3 meses:`);
+    for (const m of last3) {
+      const idx = catSeason[m.month] / catAvg;
+      const nivel = idx >= 1.1 ? "ALTO" : idx <= 0.9 ? "BAJO" : "NORMAL";
+      console.log(`    ${m.yearMonth}  adj=${String(m.demanda_adj).padStart(4)}  idx_cat=${idx.toFixed(2)}  → ${nivel} para su categoría`);
+    }
+    console.log("──────────────────────────────────────────");
+  }
+
+  // ── 2.7c. Top 5 SKUs por peso en portafolio — cruce con estacionalidad ────
+  {
+    // Construir RunRate y peso de cada SKU
+    const skuWeights = Object.entries(ventasMap).map(([id, v]) => {
+      const demAdj     = v.months.map(m => m.demanda_adj ?? m.qty);
+      const qtyOrig    = v.months.map(m => m.qty);
+      const avgHist    = demAdj.reduce((a,b)=>a+b,0) / (demAdj.length||1);
+      const last3Adj   = demAdj.slice(-3);
+      const avgLast3   = last3Adj.reduce((a,b)=>a+b,0) / (last3Adj.length||1);
+      const runRateAdj = 0.7 * avgLast3 + 0.3 * avgHist;
+      const runRateOld = qtyOrig.reduce((a,b)=>a+b,0) / (qtyOrig.length||1);
+      return { id, name: v.name, runRateAdj, runRateOld, months: v.months };
+    });
+
+    const totalRR = skuWeights.reduce((s,d) => s + d.runRateAdj, 0);
+    const top5    = [...skuWeights].sort((a,b) => b.runRateAdj - a.runRateAdj).slice(0,5);
+
+    console.log("── Top 5 SKUs por peso en portafolio ─────");
+    console.log("  SKU      RR_NUEVO  RR_ANTIG  PESO%   NOMBRE");
+    for (const d of top5) {
+      const peso = (d.runRateAdj / totalRR * 100).toFixed(1);
+      console.log(`  ${d.id.padEnd(8)} ${d.runRateAdj.toFixed(1).padStart(8)}  ${d.runRateOld.toFixed(1).padStart(8)}  ${peso.padStart(5)}%  ${d.name.substring(0,30)}`);
+    }
+    console.log("──────────────────────────────────────────");
+
+    // Cruce con estacionalidad de su categoría
+    console.log("  Cruce últimos 3 meses vs estacionalidad:");
+    for (const d of top5) {
+      const prefix = d.id.substring(0,3);
+      const catSeason = prefix === "113" ? season113
+                      : prefix === "121" ? season121
+                      : prefix === "112" ? season112
+                      : seasonAll;
+      const catAvg = Object.values(catSeason).reduce((a,b)=>a+b,0)/12;
+      const last3m = d.months.slice(-3);
+      const niveles = last3m.map(m => {
+        const idx = catSeason[m.month] / catAvg;
+        return idx >= 1.1 ? "ALTO" : idx <= 0.9 ? "BAJO" : "NORM";
+      });
+      const resumen = niveles.join(" / ");
+      console.log(`  ${d.id.padEnd(8)} últimos 3 → ${resumen}  (${MN[last3m[0].month]} ${MN[last3m[1].month]} ${MN[last3m[2].month]})`);
+    }
+    console.log("──────────────────────────────────────────");
+
+    // ¿El -21% está concentrado o distribuido?
+    const top5RROld = top5.reduce((s,d)=>s+d.runRateOld,0);
+    const top5RRNew = top5.reduce((s,d)=>s+d.runRateAdj,0);
+    const top5Pct   = (top5RRNew/totalRR*100).toFixed(1);
+    const top5Delta = ((top5RRNew-top5RROld)/top5RROld*100).toFixed(1);
+    console.log(`  Los 5 SKUs top concentran ${top5Pct}% del portafolio.`);
+    console.log(`  Su variación agregada RunRate nuevo vs antiguo: ${top5Delta}%`);
+    console.log("──────────────────────────────────────────");
+  }
+
+  // ── 2.7. Validación RunRate — comparativo antiguo vs nuevo ────────────────
+  for (const skuId of ["112017", "112016", "112021"]) {
+    const v = ventasMap[skuId];
+    if (!v) continue;
+
+    const demAdj   = v.months.map(m => m.demanda_adj ?? m.qty);
+    const qtyOrig  = v.months.map(m => m.qty);
+
+    const avgHistorico   = demAdj.reduce((a, b) => a + b, 0) / (demAdj.length || 1);
+    const last3          = demAdj.slice(-3);
+    const avgLast3       = last3.reduce((a, b) => a + b, 0) / (last3.length || 1);
+    const runRateAdj     = 0.7 * avgLast3 + 0.3 * avgHistorico;
+    const avgSimpleAntig = qtyOrig.reduce((a, b) => a + b, 0) / (qtyOrig.length || 1);
+
+    console.log(`── RunRate SKU ${skuId} ──────────────────────`);
+    console.log(`  Promedio simple antiguo (qty orig)   ${avgSimpleAntig.toFixed(2)}`);
+    console.log(`  Avg histórico DEMANDA_ADJ            ${avgHistorico.toFixed(2)}`);
+    console.log(`  Avg últimos 3 meses DEMANDA_ADJ      ${avgLast3.toFixed(2)}`);
+    console.log(`  RUNRATE_ADJ (0.7×last3+0.3×hist)     ${runRateAdj.toFixed(2)}`);
+    console.log(`  Δ (RunRate − simple antiguo)         ${(runRateAdj - avgSimpleAntig).toFixed(2)}`);
+    console.log("──────────────────────────────────────────");
+  }
+
+  // ── 2.8. Validación global RunRate — todos los SKUs ───────────────────────
+  interface SkuDelta {
+    id: string; name: string;
+    antiguo: number; avgHistorico: number; avgLast3: number; nuevo: number; delta: number;
+    sinDemandaEnLast3: number;
+  }
+  const globalDelta: SkuDelta[] = [];
+
+  for (const [id, v] of Object.entries(ventasMap)) {
+    const demAdj  = v.months.map(m => m.demanda_adj ?? m.qty);
+    const qtyOrig = v.months.map(m => m.qty);
+    const last3Months = v.months.slice(-3);
+
+    const avgHistorico = demAdj.reduce((a, b) => a + b, 0) / (demAdj.length || 1);
+    const last3Adj     = demAdj.slice(-3);
+    const avgLast3     = last3Adj.reduce((a, b) => a + b, 0) / (last3Adj.length || 1);
+    const runRateAdj   = 0.7 * avgLast3 + 0.3 * avgHistorico;
+    const avgAntiguo   = qtyOrig.reduce((a, b) => a + b, 0) / (qtyOrig.length || 1);
+    const sinDemandaEnLast3 = last3Months.filter(m => m.estado === "SIN_DEMANDA").length;
+
+    globalDelta.push({
+      id, name: v.name,
+      antiguo: avgAntiguo, avgHistorico, avgLast3, nuevo: runRateAdj,
+      delta: runRateAdj - avgAntiguo,
+      sinDemandaEnLast3,
+    });
+  }
+
+  const positivos = globalDelta.filter(d => d.delta >  d.antiguo * 0.05).length;
+  const negativos = globalDelta.filter(d => d.delta < -d.antiguo * 0.05).length;
+  const estables  = globalDelta.filter(d => Math.abs(d.delta) <= d.antiguo * 0.05).length;
+
+  console.log("── Validación Global RunRate (168 SKUs) ──");
+  console.log(`  Δ positivo  (RunRate > antiguo +5%)   ${String(positivos).padStart(4)} SKUs`);
+  console.log(`  Δ negativo  (RunRate < antiguo −5%)   ${String(negativos).padStart(4)} SKUs`);
+  console.log(`  Δ ≈ 0       (variación ≤ 5%)          ${String(estables).padStart(4)} SKUs`);
+  console.log("──────────────────────────────────────────");
+
+  // Top 10 mayor incremento
+  const top10sube = [...globalDelta].sort((a, b) => b.delta - a.delta).slice(0, 10);
+  console.log("  Top 10 SKUs con mayor INCREMENTO RunRate:");
+  console.log("  SKU      ANTIG  HIST_ADJ  LAST3   NUEVO     Δ   NOMBRE");
+  for (const d of top10sube) {
+    console.log(`  ${d.id.padEnd(8)} ${d.antiguo.toFixed(1).padStart(5)}  ${d.avgHistorico.toFixed(1).padStart(7)}  ${d.avgLast3.toFixed(1).padStart(5)}  ${d.nuevo.toFixed(1).padStart(6)}  ${("+" + d.delta.toFixed(1)).padStart(6)}  ${d.name.substring(0, 30)}`);
+  }
+  console.log("──────────────────────────────────────────");
+
+  // Top 10 mayor decremento
+  const negativosList = globalDelta.filter(d => d.delta < -d.antiguo * 0.05);
+  const top10baja = [...negativosList].sort((a, b) => a.delta - b.delta).slice(0, 10);
+  console.log("  Top 10 SKUs con mayor DECREMENTO RunRate:");
+  console.log("  SKU      ANTIG  HIST_ADJ  LAST3   NUEVO     Δ   SD_L3  NOMBRE");
+  for (const d of top10baja) {
+    console.log(`  ${d.id.padEnd(8)} ${d.antiguo.toFixed(1).padStart(5)}  ${d.avgHistorico.toFixed(1).padStart(7)}  ${d.avgLast3.toFixed(1).padStart(5)}  ${d.nuevo.toFixed(1).padStart(6)}  ${d.delta.toFixed(1).padStart(6)}  ${String(d.sinDemandaEnLast3).padStart(5)}  ${d.name.substring(0, 28)}`);
+  }
+  console.log("──────────────────────────────────────────");
+
+  // Cuántos negativos tienen SIN_DEMANDA reciente
+  const negativosConSD = negativosList.filter(d => d.sinDemandaEnLast3 > 0).length;
+  console.log(`  De ${negativosList.length} SKUs con Δ negativo:`);
+  console.log(`    Con ≥1 SIN_DEMANDA en últimos 3 meses  ${String(negativosConSD).padStart(4)} SKUs (${(negativosConSD/negativosList.length*100).toFixed(0)}%)`);
+  console.log(`    Sin SIN_DEMANDA reciente               ${String(negativosList.length - negativosConSD).padStart(4)} SKUs (${((negativosList.length-negativosConSD)/negativosList.length*100).toFixed(0)}%)`);
+  console.log("──────────────────────────────────────────");
+
+  // Cambio porcentual agregado del portafolio
+  const sumaAntigua = globalDelta.reduce((s, d) => s + d.antiguo, 0);
+  const sumaNueva   = globalDelta.reduce((s, d) => s + d.nuevo, 0);
+  const cambioPct   = ((sumaNueva - sumaAntigua) / sumaAntigua) * 100;
+  console.log(`  Portafolio — demanda reconocida agregada:`);
+  console.log(`    Suma promedios simples antiguos   ${sumaAntigua.toFixed(1)}`);
+  console.log(`    Suma RunRate ADJ nuevos           ${sumaNueva.toFixed(1)}`);
+  console.log(`    Cambio porcentual agregado        ${cambioPct >= 0 ? "+" : ""}${cambioPct.toFixed(2)}%`);
+  console.log("──────────────────────────────────────────");
+
+  // ── 2.9. Índices estacionales por SKU + RUNRATE_ESTACIONAL ───────────────
+  const TODAY = new Date();
+
+  // Índices estacionales por SKU (fallback a categoría si < 2 obs por mes)
+  const skuSeasonIdx: Record<string, Record<number, number>> = {};
+  for (const [id, v] of Object.entries(ventasMap)) {
+    const monthVals: Record<number, number[]> = {};
+    for (let m = 1; m <= 12; m++) monthVals[m] = [];
+    for (const m of v.months) {
+      if (m.month >= 1 && m.month <= 12) monthVals[m.month].push(m.demanda_adj ?? m.qty);
+    }
+    // Promedio anual basado en DEMANDA_ADJ (suma de promedios mensuales / 12)
+    const monthAvgs: Record<number, number> = {};
+    for (let m = 1; m <= 12; m++) {
+      monthAvgs[m] = monthVals[m].length
+        ? monthVals[m].reduce((a,b)=>a+b,0) / monthVals[m].length : 0;
+    }
+    const annualAvg = Object.values(monthAvgs).reduce((a,b)=>a+b,0) / 12;
+
+    const prefix = id.substring(0,3);
+    const catSeason = prefix==="113" ? season113 : prefix==="121" ? season121
+                    : prefix==="112" ? season112 : seasonAll;
+    const catAvg = Object.values(catSeason).reduce((a,b)=>a+b,0) / 12;
+
+    const indices: Record<number, number> = {};
+    for (let m = 1; m <= 12; m++) {
+      if (monthVals[m].length >= 2 && annualAvg > 0) {
+        indices[m] = monthAvgs[m] / annualAvg;
+      } else {
+        indices[m] = catAvg > 0 ? catSeason[m] / catAvg : 1;
+      }
+    }
+    skuSeasonIdx[id] = indices;
+  }
+
+  // Calcular RUNRATE_ESTACIONAL por SKU
+  interface RREstData {
+    projectedMonth: number; idxProyectado: number; idxLast3: number;
+    factorRaw: number; factorEstacional: number;
+    runrateAdj: number; runrateEstacional: number; capApplied: boolean;
+  }
+  const skuRRE: Record<string, RREstData> = {};
+  let capSuperior = 0, capInferior = 0;
+  let sumaRRE = 0, sumaAntigua2 = 0;
+
+  for (const [id, v] of Object.entries(ventasMap)) {
+    const lts = leadTimesMap[id] ?? [];
+    const leadDays = lts.length ? Math.round(lts.reduce((a,b)=>a+b,0)/lts.length) : 60;
+    const arrival = new Date(TODAY);
+    arrival.setDate(arrival.getDate() + leadDays);
+    const projectedMonth = arrival.getMonth() + 1;
+
+    const demAdj   = v.months.map(m => m.demanda_adj ?? m.qty);
+    const qtyOrig  = v.months.map(m => m.qty);
+    const avgHist  = demAdj.reduce((a,b)=>a+b,0) / (demAdj.length||1);
+    const last3Adj = demAdj.slice(-3);
+    const avgLast3 = last3Adj.reduce((a,b)=>a+b,0) / (last3Adj.length||1);
+    const runrateAdj = 0.7 * avgLast3 + 0.3 * avgHist;
+
+    const idx = skuSeasonIdx[id];
+    const idxProyectado = idx[projectedMonth] ?? 1;
+    const last3MonthNums = v.months.slice(-3).map(m => m.month);
+    const idxLast3 = last3MonthNums.map(m => idx[m] ?? 1).reduce((a,b)=>a+b,0) / last3MonthNums.length;
+
+    const factorRaw = idxLast3 > 0 ? idxProyectado / idxLast3 : 1;
+    const factorEstacional = Math.min(Math.max(factorRaw, 0.7), 1.5);
+    const capApplied = Math.abs(factorRaw - factorEstacional) > 0.001;
+    if (factorRaw > 1.5) capSuperior++;
+    if (factorRaw < 0.7) capInferior++;
+
+    const runrateEstacional = runrateAdj * factorEstacional;
+    const runrateOld = qtyOrig.reduce((a,b)=>a+b,0) / (qtyOrig.length||1);
+    sumaRRE += runrateEstacional;
+    sumaAntigua2 += runrateOld;
+
+    skuRRE[id] = { projectedMonth, idxProyectado, idxLast3, factorRaw,
+                   factorEstacional, runrateAdj, runrateEstacional, capApplied };
+  }
+
+  // Diagnóstico — top decrementos
+  console.log("── Factor Estacional — Top Decrementos ───");
+  console.log("  SKU      PROY  IDX_P  IDX_L3  F_RAW  F_EST  CAP   RR_ADJ  RR_EST");
+  for (const id of ["113005","121023","113002"]) {
+    const d = skuRRE[id]; if (!d) continue;
+    console.log(`  ${id}  ${MN[d.projectedMonth].padEnd(4)}  ${d.idxProyectado.toFixed(2).padStart(5)}  ${d.idxLast3.toFixed(2).padStart(6)}  ${d.factorRaw.toFixed(2).padStart(5)}  ${d.factorEstacional.toFixed(2).padStart(5)}  ${d.capApplied?"SI ":"no "}  ${d.runrateAdj.toFixed(1).padStart(6)}  ${d.runrateEstacional.toFixed(1).padStart(6)}`);
+  }
+  console.log("──────────────────────────────────────────");
+
+  // Diagnóstico — BOPP
+  console.log("── Factor Estacional — BOPP ──────────────");
+  console.log("  SKU      PROY  IDX_P  IDX_L3  F_RAW  F_EST  CAP   RR_ADJ  RR_EST");
+  for (const id of ["112017","112016","112021"]) {
+    const d = skuRRE[id]; if (!d) continue;
+    console.log(`  ${id}  ${MN[d.projectedMonth].padEnd(4)}  ${d.idxProyectado.toFixed(2).padStart(5)}  ${d.idxLast3.toFixed(2).padStart(6)}  ${d.factorRaw.toFixed(2).padStart(5)}  ${d.factorEstacional.toFixed(2).padStart(5)}  ${d.capApplied?"SI ":"no "}  ${d.runrateAdj.toFixed(1).padStart(6)}  ${d.runrateEstacional.toFixed(1).padStart(6)}`);
+  }
+  console.log("──────────────────────────────────────────");
+
+  // Cap stats + portafolio
+  console.log(`  Cap superior aplicado (>1.5):  ${capSuperior} SKUs`);
+  console.log(`  Cap inferior aplicado (<0.7):  ${capInferior} SKUs`);
+  const cambioPctRRE = ((sumaRRE - sumaAntigua2) / sumaAntigua2) * 100;
+  console.log(`  Portafolio RUNRATE_ESTACIONAL vs simple antiguo:`);
+  console.log(`    Suma simple antiguo      ${sumaAntigua2.toFixed(1)}`);
+  console.log(`    Suma RR_ESTACIONAL       ${sumaRRE.toFixed(1)}`);
+  console.log(`    Cambio porcentual        ${cambioPctRRE >= 0 ? "+" : ""}${cambioPctRRE.toFixed(2)}%`);
+  console.log("──────────────────────────────────────────");
+
   // ── 3. Build supplies list ──
   const supplies = Object.entries(ventasMap).map(([id, v]) => {
     const lts = leadTimesMap[id] ?? [];
@@ -228,8 +742,11 @@ function buildData() {
     v.months.map((m) => ({
       date: `${m.yearMonth}-01`,
       itemId: id,
-      quantity: m.qty,
+      quantity: m.qty,              // ventas originales — para el gráfico
+      demanda_adj: m.demanda_adj ?? m.qty,
       inventario: m.inv,
+      estado: m.estado ?? "NORMAL",
+      fuente_adj: m.fuente_adj ?? "ORIGINAL",
     }))
   ).sort((a, b) => a.date.localeCompare(b.date));
 
@@ -237,12 +754,13 @@ function buildData() {
   const inventory = Object.entries(ventasMap).map(([id, v]) => {
     // Monthly sales array sorted chronologically for stats
     const sortedMonths = [...v.months].sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
-    const ventas_mensuales = sortedMonths.map((m) => m.qty);
+    const ventas_mensuales = sortedMonths.map((m) => m.demanda_adj ?? m.qty);
     const inventario_mensual: Record<string, number> = {};
     sortedMonths.forEach((m) => {
       inventario_mensual[`${m.yearMonth}-01`] = m.inv;
     });
 
+    const rre = skuRRE[id];
     return {
       itemId: id,
       stock: v.latestInventory,
@@ -251,6 +769,13 @@ function buildData() {
       inventario_mensual,
       in_transito: inTransitoMap[id] ?? {},
       latestYearMonth: v.latestYearMonth,
+      runrate_adj:        rre ? Number(rre.runrateAdj.toFixed(2))        : 0,
+      runrate_estacional: rre ? Number(rre.runrateEstacional.toFixed(2)) : 0,
+      idx_proyectado:     rre ? Number(rre.idxProyectado.toFixed(3))     : 1,
+      idx_last3:          rre ? Number(rre.idxLast3.toFixed(3))          : 1,
+      factor_raw:         rre ? Number(rre.factorRaw.toFixed(3))         : 1,
+      factor_estacional:  rre ? Number(rre.factorEstacional.toFixed(3))  : 1,
+      projected_month:    rre?.projectedMonth ?? 1,
     };
   });
 
