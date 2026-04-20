@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import Fuse from "fuse.js";
 import { 
-  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar 
+  ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar, ReferenceLine
 } from "recharts";
 import { 
   Package, TrendingUp, Calendar, AlertTriangle, Ship, CheckCircle2, Search, BrainCircuit, Loader2, Layers
@@ -61,6 +61,7 @@ export default function App() {
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
   const [forecasts, setForecasts] = useState<Record<string, ForecastResult>>({});
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [chartMonths, setChartMonths] = useState<number | null>(null);
   const [isAnalysisOpen, setIsAnalysisOpen] = useState(false);
   const [orderPopup, setOrderPopup] = useState<{date: string; orders: {cantidad:number; fechaOrden:string; fechaLlegada:string; proveedor:string}[]} | null>(null);
   
@@ -175,7 +176,7 @@ export default function App() {
     const reorderPoint = Math.round(avgMonthly * leadTimeMonths * 1.25);
     const suggestedQty = Math.round(avgMonthly * (leadTimeMonths + 3));
 
-    return monthlyData.map((m, index) => {
+    const historical = monthlyData.map((m, index) => {
       const last4 = monthlyData.slice(Math.max(0, index - 3), index + 1);
       const sma4 = last4.reduce((a, b) => a + b.quantity, 0) / last4.length;
 
@@ -187,14 +188,12 @@ export default function App() {
 
       const stockVal = invMap[m.date] ?? 0;
       const ordersInTransit = inTransitoMap[m.date] ?? [];
-      const currentYM = m.date.substring(0, 7); // "YYYY-MM"
+      const currentYM = m.date.substring(0, 7);
 
-      // Pedido nuevo: colocado ESTE mes (primer mes en tránsito) → amarillo
       const pedidoNuevo = ordersInTransit
         .filter((o: any) => getYearMonth(o.fechaOrden) === currentYM)
         .reduce((s: number, o: any) => s + o.cantidad, 0);
 
-      // Pedido en tránsito: colocado meses anteriores → verde
       const pedidoTransito = ordersInTransit
         .filter((o: any) => getYearMonth(o.fechaOrden) !== currentYM)
         .reduce((s: number, o: any) => s + o.cantidad, 0);
@@ -207,6 +206,7 @@ export default function App() {
       return {
         date: label,
         isoDate: m.date,
+        isForecast: false,
         quantity: m.quantity,
         stock: stockVal,
         pedidoTransito,
@@ -216,7 +216,53 @@ export default function App() {
         sma12: Number(sma12.toFixed(0)),
       };
     });
+
+    // ── Banda de proyección: próximos 3 meses — usa DEMANDA_ADJ ──
+    const adjSales = currentInv?.ventas_mensuales ?? [];
+    const avg = adjSales.reduce((a: number, b: number) => a + b, 0) / (adjSales.length || 1);
+    const variance = adjSales.map((x: number) => Math.pow(x - avg, 2)).reduce((a: number, b: number) => a + b, 0) / (adjSales.length || 1);
+    const stdDev = Math.sqrt(variance);
+
+    const forecastMid = Math.round(avg);
+    const forecastHigh = Math.round(avg + stdDev);
+    const forecastLow = Math.max(0, Math.round(avg - stdDev));
+    const forecastSpread = forecastHigh - forecastLow;
+
+    const lastDate = monthlyData[monthlyData.length - 1].date;
+    let projectedStock = currentInv?.stock ?? 0;
+
+    const forecastPoints = [1, 2, 3].map(i => {
+      const d = new Date(lastDate + "T12:00:00");
+      d.setMonth(d.getMonth() + i);
+      const isoDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+      const label = d.toLocaleDateString("es-CO", { month: "short", year: "2-digit" });
+
+      projectedStock = Math.max(0, projectedStock - forecastMid);
+
+      const ordersForMonth = inTransitoMap[isoDate] ?? [];
+      const transitForecast = ordersForMonth.reduce((s: number, o: any) => s + o.cantidad, 0);
+
+      return {
+        date: label,
+        isoDate,
+        isForecast: true,
+        forecastLow,
+        forecastSpread,
+        forecastMid,
+        stockForecast: projectedStock,
+        transitForecast,
+      };
+    });
+
+    return [...historical, ...forecastPoints];
   }, [selectedItem, history, currentInv]);
+
+  const filteredChartData = useMemo(() => {
+    const historical = chartData.filter((d: any) => !d.isForecast);
+    const forecast = chartData.filter((d: any) => d.isForecast);
+    const sliced = chartMonths ? historical.slice(-chartMonths) : historical;
+    return [...sliced, ...forecast];
+  }, [chartData, chartMonths]);
 
   const analysisData = useMemo(() => {
     if (!selectedItem || !currentItem) return null;
@@ -240,18 +286,12 @@ export default function App() {
   const currentStats = useMemo(() => {
     if (!selectedItem || !currentItem || !currentInv) return null;
 
-    // Use real monthly sales from ventas CSV (already built on server)
-    const monthlySales = currentInv.ventas_mensuales ?? [];
-    const nonZero = monthlySales.filter(v => v > 0);
-    const filled = nonZero.length >= 6
-      ? nonZero
-      : [...nonZero, ...Array(Math.max(0, 6 - nonZero.length)).fill(nonZero[0] ?? 0)];
-
     return calculateInventoryMetrics({
       sku: currentItem.name,
-      ventas_mensuales: filled,
+      ventas_mensuales: currentInv.ventas_mensuales ?? [],
       stock_actual: currentInv.stock,
       lead_time_dias: currentItem.leadTimeDays,
+      runrate_override: (currentInv as any).runrate_estacional,
     });
   }, [selectedItem, currentItem, currentInv]);
 
@@ -458,7 +498,23 @@ export default function App() {
                             <CardTitle className="text-lg font-bold">Correlación Demanda vs. Inventario</CardTitle>
                             <CardDescription>Análisis de cómo las ventas impactan el stock disponible</CardDescription>
                           </div>
-                          <Button 
+                          <div className="flex items-center gap-3">
+                            <div className="flex gap-1">
+                              {([{ label: "3M", value: 3 }, { label: "6M", value: 6 }, { label: "1A", value: 12 }, { label: "2A", value: 24 }, { label: "Todo", value: null }] as { label: string; value: number | null }[]).map(opt => (
+                                <button
+                                  key={opt.label}
+                                  onClick={() => setChartMonths(opt.value)}
+                                  className={`px-3 py-1 text-xs font-semibold rounded-full border transition-colors ${
+                                    chartMonths === opt.value
+                                      ? "bg-orange-600 text-white border-orange-600"
+                                      : "bg-white text-gray-600 border-gray-300 hover:border-orange-400 hover:text-orange-600"
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </div>
+                          <Button
                             onClick={() => handleAnalyze(selectedItem)} 
                             disabled={isAnalyzing}
                             className="bg-orange-600 hover:bg-orange-700 text-white"
@@ -470,11 +526,12 @@ export default function App() {
                             )}
                             {isAnalyzing ? "Analizando..." : "Predecir con AI"}
                           </Button>
+                          </div>
                         </CardHeader>
                         <CardContent>
                           <div className="h-[450px] w-full">
                             <ResponsiveContainer width="100%" height="100%">
-                              <ComposedChart data={chartData}>
+                              <ComposedChart data={filteredChartData}>
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
                                 <XAxis
                                   dataKey="date"
@@ -573,15 +630,75 @@ export default function App() {
                                   strokeDasharray="5 5"
                                   dot={false}
                                 />
+
+                                {/* Separador histórico / proyección */}
+                                {(() => {
+                                  const lastHist = filteredChartData.filter((d: any) => !d.isForecast).slice(-1)[0]?.date;
+                                  return lastHist ? (
+                                    <ReferenceLine
+                                      x={lastHist}
+                                      yAxisId="ventas"
+                                      stroke="#D97706"
+                                      strokeDasharray="6 3"
+                                      label={{ value: "◀ Histórico  |  Proyección ▶", position: "top", fill: "#D97706", fontSize: 10, fontWeight: "bold" }}
+                                    />
+                                  ) : null;
+                                })()}
+
+                                {/* Banda de proyección — eje ventas */}
+                                <Area
+                                  yAxisId="ventas"
+                                  type="monotone"
+                                  dataKey="forecastLow"
+                                  stackId="band"
+                                  stroke="none"
+                                  fill="transparent"
+                                  legendType="none"
+                                  connectNulls={false}
+                                />
+                                <Area
+                                  yAxisId="ventas"
+                                  type="monotone"
+                                  dataKey="forecastSpread"
+                                  stackId="band"
+                                  stroke="#F59E0B"
+                                  strokeWidth={1.5}
+                                  strokeDasharray="4 2"
+                                  fill="#FEF3C7"
+                                  fillOpacity={0.85}
+                                  name="Banda de Proyección"
+                                  connectNulls={false}
+                                />
                                 <Line
                                   yAxisId="ventas"
                                   type="monotone"
-                                  dataKey="sma12"
-                                  name="Tendencia Trimestral"
-                                  stroke="#8B5CF6"
+                                  dataKey="forecastMid"
+                                  name="Demanda Proyectada"
+                                  stroke="#D97706"
                                   strokeWidth={2}
-                                  strokeDasharray="3 3"
-                                  dot={false}
+                                  strokeDasharray="6 3"
+                                  dot={{ r: 5, fill: "#D97706", strokeWidth: 0 }}
+                                  connectNulls={false}
+                                />
+
+                                {/* Stock y tránsito proyectados — eje inventario */}
+                                <Line
+                                  yAxisId="inventario"
+                                  type="monotone"
+                                  dataKey="stockForecast"
+                                  name="Stock Proyectado"
+                                  stroke="#3B82F6"
+                                  strokeWidth={2}
+                                  strokeDasharray="6 3"
+                                  dot={{ r: 5, fill: "#3B82F6", strokeWidth: 0 }}
+                                  connectNulls={false}
+                                />
+                                <Bar
+                                  yAxisId="inventario"
+                                  dataKey="transitForecast"
+                                  name="Tránsito Proyectado"
+                                  fill="#4ADE80"
+                                  opacity={0.5}
                                 />
                               </ComposedChart>
                             </ResponsiveContainer>
@@ -590,59 +707,7 @@ export default function App() {
                       </Card>
 
                       {/* AI Insights Section */}
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        {currentStats && (
-                          <Card className="border-gray-200 shadow-sm">
-                            <CardHeader className="pb-2">
-                              <CardTitle className="text-sm font-bold flex items-center gap-2">
-                                <Calculator className="w-4 h-4" />
-                                Métricas Estadísticas
-                              </CardTitle>
-                            </CardHeader>
-                            <CardContent className="space-y-4">
-                              <div className="space-y-1">
-                                <div className="flex justify-between text-sm">
-                                  <span className="text-gray-700 font-semibold">Promedio Mensual</span>
-                                  <span className="font-bold">{currentStats.average}</span>
-                                </div>
-                                <p className="text-[10px] text-gray-500 leading-tight">
-                                  La media de unidades vendidas por mes en el periodo analizado.
-                                </p>
-                              </div>
-
-                              <div className="space-y-1">
-                                <div className="flex justify-between text-sm">
-                                  <span className="text-gray-700 font-semibold">Desviación Estándar</span>
-                                  <span className="font-bold">{currentStats.stdDev}</span>
-                                </div>
-                                <p className="text-[10px] text-gray-500 leading-tight">
-                                  Mide la volatilidad: qué tanto varían las ventas reales respecto al promedio.
-                                </p>
-                              </div>
-
-                              <div className="space-y-1">
-                                <div className="flex justify-between text-sm">
-                                  <span className="text-gray-700 font-semibold">Percentil 75 (P75)</span>
-                                  <span className="font-bold">{currentStats.p75}</span>
-                                </div>
-                                <p className="text-[10px] text-gray-500 leading-tight">
-                                  Nivel de ventas que cubre el 75% de los meses históricos (Base de seguridad).
-                                </p>
-                              </div>
-
-                              <div className="space-y-1">
-                                <div className="flex justify-between text-sm">
-                                  <span className="text-gray-700 font-semibold">Percentil 90 (P90)</span>
-                                  <span className="font-bold text-purple-600">{currentStats.p90}</span>
-                                </div>
-                                <p className="text-[10px] text-gray-500 leading-tight">
-                                  Nivel de ventas para cubrir picos de demanda extremos (90% de los casos).
-                                </p>
-                              </div>
-                            </CardContent>
-                          </Card>
-                        )}
-
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         {currentForecast && (
                           <>
                             <Card className="border-orange-200 bg-orange-50/30 shadow-sm">
@@ -821,7 +886,7 @@ export default function App() {
                             {orderPopup && (() => {
                               const popupYM = orderPopup.date; // formatted label e.g. "nov de 23"
                               // Find the isoDate from chartData to determine currentYM
-                              const chartPoint = chartData.find(d => d.date === popupYM);
+                              const chartPoint = filteredChartData.find(d => d.date === popupYM);
                               const currentYM = chartPoint?.isoDate?.substring(0, 7) ?? "";
                               return orderPopup.orders.map((o, i) => {
                                 const isNew = getYearMonth(o.fechaOrden) === currentYM;
