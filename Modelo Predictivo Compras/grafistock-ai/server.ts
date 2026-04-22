@@ -1263,24 +1263,69 @@ async function startServer() {
   app.get("/api/inventory", (_req, res) => res.json(inventory));
 
   app.post("/api/analyze", async (req, res) => {
-    const { item, history: itemHistory, currentStock, leadTimeDays } = req.body;
+    const { item, history: itemHistory, inv } = req.body;
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey || apiKey === "your_new_key_here") {
       return res.status(400).json({ error: "ANTHROPIC_API_KEY no configurada en .env" });
     }
     try {
-      const prompt = `Analiza los datos históricos de ventas mensuales para el producto: ${item.name}.
-Ventas por mes (cronológico): ${JSON.stringify(itemHistory)}
-Stock actual: ${currentStock}
-Lead Time: ${leadTimeDays} días.
+      // Ultimos 24 meses de historial con DEMANDA_ADJ, ESTADO y FUENTE_ADJ
+      const hist24 = [...(itemHistory ?? [])]
+        .sort((a: any, b: any) => b.date.localeCompare(a.date))
+        .slice(0, 24)
+        .reverse()
+        .map((r: any) => ({
+          mes: r.date?.substring(0, 7),
+          demanda_adj: r.demanda_adj,
+          estado: r.estado,
+          fuente_adj: r.fuente_adj,
+        }));
+
+      const alertaMomentum = inv?.revisar_precio === true;
+
+      const contextBlock = {
+        codigo:            item?.id,
+        descripcion:       item?.name,
+        categoria_prefijo: item?.id?.substring(0, 3),
+        tipo_demanda:      inv?.tipo_demanda,
+        mes_proyectado:    inv?.projected_month,
+        runrate_adj:       inv?.runrate_adj,
+        runrate_estacional:inv?.runrate_estacional,
+        cv_norm:           inv?.cv_cap,
+        factor_estacional: inv?.factor_estacional,
+        idx_last3:         inv?.idx_last3,
+        idx_proyectado:    inv?.idx_proyectado,
+        ancho_corredor_pct:inv?.ancho_corredor,
+        cover_p50:         inv?.cover_p50,
+        cover_p75:         inv?.cover_p75,
+        cover_p90:         inv?.cover_p90,
+        inv_arribo:        inv?.inv_arribo,
+        zona:              inv?.zona,
+        escenario_default: inv?.escenario_default,
+        sugerido_final:    inv?.sugerido_final,
+        alerta_momentum:   alertaMomentum,
+        revisar_precio:    inv?.revisar_precio,
+        historico_demanda: hist24,
+      };
+
+      const prompt = `Eres un analista de inventario ayudando a revisar un SKU específico. Tu rol es interpretativo, no predictivo. El modelo estadístico ya calculó los números del corredor P50/P75/P90. Tu tarea es complementar ese cálculo con observaciones cualitativas que el modelo puede haber pasado por alto.
+
+Responde tres preguntas específicas sobre el SKU en máximo 2 párrafos por respuesta. Sé concreto, evita generalidades. Si no hay información suficiente para responder una pregunta, dilo explícitamente.
+
+DATOS DEL SKU:
+${JSON.stringify(contextBlock, null, 2)}
+
+Pregunta 1. ¿Hay señales de cambio estructural en los últimos 3 meses de DEMANDA_ADJ que NO se expliquen por el patrón estacional del SKU o de su categoría? Mira específicamente si hay un salto de nivel sostenido, una caída abrupta, o un patrón nuevo que no aparece en años anteriores.
+
+Pregunta 2. Si el SKU tiene ALERTA_MOMENTUM activada (alerta_momentum: true), revisa el histórico reciente e indica si el momentum parece ser ruido coyuntural (un mes atípico) o un patrón que podría sostenerse en los próximos 3 a 6 meses. Si el SKU no tiene momentum alto, responde indicando que no aplica.
+
+Pregunta 3. Al mirar el histórico completo de DEMANDA_ADJ con sus estados mensuales, ¿hay alguna observación cualitativa que el modelo estadístico podría haber pasado por alto? Por ejemplo: un mes con comportamiento anómalo que contamina el promedio, una tendencia gradual que el CV no captura bien, o una característica del ciclo anual que el índice estacional no refleja.
 
 Responde ÚNICAMENTE con un JSON válido, sin texto adicional, con esta estructura exacta:
 {
-  "predictedDemand": <número entero: demanda promedio proyectada próximos 3 meses>,
-  "confidence": <número entre 0 y 1>,
-  "reasoning": <string en español: análisis del patrón de demanda en máximo 3 oraciones>,
-  "isSeasonal": <true o false>,
-  "recommendedOrderDate": <string ISO fecha recomendada para próximo pedido>
+  "cambio_estructural": "<respuesta a Pregunta 1, máximo 2 párrafos>",
+  "momentum_interpretacion": "<respuesta a Pregunta 2, máximo 2 párrafos>",
+  "observacion_cualitativa": "<respuesta a Pregunta 3, máximo 2 párrafos>"
 }`;
 
       const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -1292,7 +1337,7 @@ Responde ÚNICAMENTE con un JSON válido, sin texto adicional, con esta estructu
         },
         body: JSON.stringify({
           model: "claude-haiku-4-5-20251001",
-          max_tokens: 512,
+          max_tokens: 1024,
           messages: [{ role: "user", content: prompt }],
         }),
       });
@@ -1301,7 +1346,6 @@ Responde ÚNICAMENTE con un JSON válido, sin texto adicional, con esta estructu
       if (!response.ok) throw new Error(data.error?.message ?? response.statusText);
 
       let text = data.content?.[0]?.text ?? "{}";
-      // Strip markdown code fences if present
       text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
       const result = JSON.parse(text);
       res.json({ itemId: item.id, ...result });
