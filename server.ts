@@ -1013,6 +1013,73 @@ function buildData() {
   console.log(`     >80%   alta incertidumbre:   ${anchoAlt} SKUs`);
   console.log("──────────────────────────────────────────");
 
+  // ── 2.9d. Gobernanza del contenedor ────────────────────────────────────────
+  interface GoberData {
+    doh:              number;
+    zona:             "PELIGRO" | "CONFORT" | "OPORTUNIDAD";
+    entraPorPeligro:  boolean;
+    entraPorDoh:      boolean;
+    entraPorCategoria:boolean;
+    entraContenedor:  boolean;
+    sugeridoGob:      number;
+    revisarPrecio:    boolean;
+  }
+  const gobMap: Record<string, GoberData> = {};
+
+  // Calcula participación de cada SKU en el sugerido de su prefijo (3 chars)
+  const sumSugByPrefix: Record<string, number> = {};
+  for (const [id, c] of Object.entries(corredorMap)) {
+    const prefix = id.substring(0, 3);
+    sumSugByPrefix[prefix] = (sumSugByPrefix[prefix] ?? 0) + c.sugeridoFinal;
+  }
+
+  for (const [id, c] of Object.entries(corredorMap)) {
+    const tipo   = tipoDemandaMap[id] ?? "CONTINUA";
+    const rre    = skuRRE[id]?.runrateEstacional ?? 0;
+    const demand = rre / 30;
+
+    // DOH mide cobertura con el stock ACTUAL (estado hoy).
+    // ZONA mide cobertura con INV_ARRIBO (stock proyectado al momento del arribo del próximo pedido).
+    // Son métricas complementarias: un SKU puede tener DOH alto pero ZONA=PELIGRO
+    // si el consumo durante el lead time consume el stock antes de que llegue el pedido.
+    const doh = demand < 0.001 ? 9999 : Math.round(c.invActual / demand);
+
+    // Regla 2 — ZONA
+    let zona: "PELIGRO" | "CONFORT" | "OPORTUNIDAD";
+    if      (c.invArribo < c.coverP50)  zona = "PELIGRO";
+    else if (c.invArribo <= c.coverP90) zona = "CONFORT";
+    else                                 zona = "OPORTUNIDAD";
+
+    // Regla 3 — Entrada al contenedor
+    const entraPorPeligro   = zona === "PELIGRO";
+    const entraPorDoh       = doh < 60;
+    const prefix            = id.substring(0, 3);
+    const sumPref           = sumSugByPrefix[prefix] ?? 0;
+    const pctCategoria      = sumPref > 0 ? c.sugeridoFinal / sumPref : 0;
+    const entraPorCategoria = tipo !== "POR_PROYECTO" && pctCategoria >= 0.10;
+
+    let entraContenedor: boolean;
+    if (tipo === "POR_PROYECTO") {
+      entraContenedor = entraPorPeligro || entraPorDoh;
+    } else {
+      entraContenedor = entraPorPeligro || entraPorDoh || entraPorCategoria;
+    }
+
+    // Regla 4 — Sugerido ajustado por gobernanza
+    const sugeridoGob = entraContenedor ? c.sugeridoFinal : 0;
+
+    // Regla 5 — Revisar precio: momentum (venta último mes / RRE) > 1.3
+    const sortedM  = [...(ventasMap[id]?.months ?? [])].sort((a,b) => b.yearMonth.localeCompare(a.yearMonth));
+    const ventaUlt = sortedM[0]?.qty ?? 0;
+    const revisarPrecio = rre > 0 && (ventaUlt / rre) > 1.3;
+
+    gobMap[id] = {
+      doh, zona,
+      entraPorPeligro, entraPorDoh, entraPorCategoria,
+      entraContenedor, sugeridoGob, revisarPrecio,
+    };
+  }
+
   // ── Validación 1: Ancho promedio por tipo en SKUs con ancho > 80% ──
   const tiposPosibles = ["CONTINUA","INTERMITENTE","POR_PROYECTO"] as const;
   console.log("\n── Validación 1: ANCHO promedio por tipo (SKUs ancho >80%) ──");
@@ -1043,6 +1110,60 @@ function buildData() {
     console.log(`   ${id.padEnd(12)} ${tipo.padEnd(15)} ${String(c.invActual).padStart(7)}  ${String(c.sugeridoFinal).padStart(9)}  ${c.escenarioDefault.padEnd(9)}  ${nombre}`);
   }
   console.log("──────────────────────────────────────────");
+
+  // ── Gobernanza — Diagnóstico 1: distribución por ZONA ──
+  console.log("\n══ GOBERNANZA CONTENEDOR ════════════════════════════════════");
+  const zonas = ["PELIGRO","CONFORT","OPORTUNIDAD"] as const;
+  console.log("\n── Diag 1: SKUs por ZONA ──────────────────────────────────");
+  for (const z of zonas) {
+    const g = Object.entries(gobMap).filter(([,d])=>d.zona===z);
+    const byCont = tiposPosibles.map(t=>`${t.substring(0,4)}:${g.filter(([id])=>(tipoDemandaMap[id]??'CONTINUA')===t).length}`).join('  ');
+    console.log(`   ${z.padEnd(12)} ${String(g.length).padStart(3)} SKUs   [${byCont}]`);
+  }
+
+  // ── Gobernanza — Diagnóstico 2: razón de entrada al contenedor ──
+  console.log("\n── Diag 2: Entrada al contenedor ──────────────────────────");
+  const entran = Object.entries(gobMap).filter(([,d])=>d.entraContenedor);
+  const soloPeligro  = entran.filter(([,d])=> d.entraPorPeligro && !d.entraPorDoh && !d.entraPorCategoria);
+  const soloDoh      = entran.filter(([,d])=>!d.entraPorPeligro &&  d.entraPorDoh && !d.entraPorCategoria);
+  const soloCat      = entran.filter(([,d])=>!d.entraPorPeligro && !d.entraPorDoh &&  d.entraPorCategoria);
+  const combinados   = entran.filter(([,d])=>[d.entraPorPeligro,d.entraPorDoh,d.entraPorCategoria].filter(Boolean).length > 1);
+  console.log(`   Total ENTRA_CONTENEDOR:   ${entran.length} SKUs`);
+  console.log(`     Solo PELIGRO:           ${soloPeligro.length}`);
+  console.log(`     Solo DOH<60:            ${soloDoh.length}`);
+  console.log(`     Solo 10% categoría:     ${soloCat.length}`);
+  console.log(`     Combinación (≥2 reglas):${combinados.length}`);
+
+  // ── Gobernanza — Diagnóstico 3: comparación de totales ──
+  const sumGob = Object.values(gobMap).reduce((s,d)=>s+d.sugeridoGob, 0);
+  console.log("\n── Diag 3: Impacto en portafolio ──────────────────────────");
+  console.log(`   SUGERIDO_FINAL antes gobernanza: ${sumFinal.toLocaleString()}`);
+  console.log(`   SUGERIDO_FINAL después gobernanza: ${sumGob.toLocaleString()}`);
+  console.log(`   Reducción: ${(sumFinal - sumGob).toLocaleString()} unidades (${((1-sumGob/sumFinal)*100).toFixed(1)}%)`);
+
+  // ── Gobernanza — Diagnóstico 4: 4 SKUs testigo ──
+  console.log("\n── Diag 4: SKUs testigo ────────────────────────────────────");
+  console.log("   Código    Zona         DOH   Entra  Razón                  Sug.Gob");
+  for (const id of ["131010","113005","112017","121023"]) {
+    const d = gobMap[id]; if (!d) continue;
+    const razones = [d.entraPorPeligro?"PELIGRO":"",d.entraPorDoh?"DOH<60":"",d.entraPorCategoria?"10%CAT":""].filter(Boolean).join("+") || "—";
+    const dohStr  = d.doh === 9999 ? "∞" : String(d.doh);
+    console.log(`   ${id.padEnd(9)} ${d.zona.padEnd(12)} ${dohStr.padStart(5)}   ${d.entraContenedor?"SÍ":"NO".padEnd(5)}  ${razones.padEnd(22)} ${d.sugeridoGob}`);
+  }
+
+  // ── Gobernanza — Diagnóstico 5: REVISAR_PRECIO ──
+  const revisar = Object.entries(gobMap).filter(([,d])=>d.revisarPrecio);
+  console.log(`\n── Diag 5: REVISAR_PRECIO — ${revisar.length} SKUs ──────────────────`);
+  if (revisar.length <= 15) {
+    for (const [id, d] of revisar) {
+      const rre = skuRRE[id]?.runrateEstacional ?? 0;
+      const sortM = [...(ventasMap[id]?.months??[])].sort((a,b)=>b.yearMonth.localeCompare(a.yearMonth));
+      const vult  = sortM[0]?.qty ?? 0;
+      const mom   = rre > 0 ? (vult/rre).toFixed(2) : "—";
+      console.log(`   ${id.padEnd(9)} momentum=${mom}  ${(ventasMap[id]?.name??"").substring(0,35)}`);
+    }
+  }
+  console.log("══════════════════════════════════════════════════════════");
 
   // ── 3. Build supplies list ──
   const supplies = Object.entries(ventasMap).map(([id, v]) => {
@@ -1113,6 +1234,12 @@ function buildData() {
       sugerido_final:     corredorMap[id]?.sugeridoFinal ?? 0,
       escenario_default:  corredorMap[id]?.escenarioDefault ?? "P75",
       ancho_corredor:     corredorMap[id]?.anchoCorredor ?? 0,
+      // Gobernanza contenedor
+      doh:                gobMap[id]?.doh               ?? 9999,
+      zona:               gobMap[id]?.zona              ?? "PELIGRO",
+      entra_contenedor:   gobMap[id]?.entraContenedor   ?? false,
+      sugerido_gob:       gobMap[id]?.sugeridoGob       ?? 0,
+      revisar_precio:     gobMap[id]?.revisarPrecio     ?? false,
     };
   });
 
