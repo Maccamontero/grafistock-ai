@@ -613,6 +613,90 @@ function buildData() {
   console.log(`    Cambio porcentual agregado        ${cambioPct >= 0 ? "+" : ""}${cambioPct.toFixed(2)}%`);
   console.log("──────────────────────────────────────────");
 
+  // ── 2.8b. Clasificación por tipo de demanda ─────────────────────────────
+  //
+  // CRITERIOS Y RACIONAL (documentación de diseño):
+  //
+  // Umbral de ceros para CONTINUA: 15%
+  //   SKU que vende ≥85% de los meses tiene oferta estructural. Por encima de 15%
+  //   los gaps distorsionan el índice estacional propio (meses vacíos bajan el
+  //   promedio mensual y generan índices inflados en los meses con actividad).
+  //
+  // Umbral de ceros para POR_PROYECTO: 50%
+  //   Más de la mitad de los meses sin venta = demanda puntual, no periódica. El
+  //   last3 puede estar dominado por un único evento; la fórmula 20/80 ancla al
+  //   histórico promediado para suavizar ese efecto.
+  //
+  // Ratio estacional de categoría > 2.5 permite CV alto en CONTINUA (Condición 2):
+  //   Carátulas (121xxx) tienen ratio ~5x (pico Feb escolar vs valle Oct); bolsillos
+  //   (113xxx) ~2.8x. Un SKU con 0% ceros en una categoría tan estacional tendrá CV
+  //   alto por ciclo real, no por irregularidad. Clasificarlo como INTERMITENTE
+  //   penalizaría su RunRate y le daría índice de categoría en lugar del propio.
+  //
+  // Fórmulas de ponderación RunRate:
+  //   CONTINUA     0.7×last3 + 0.3×histórico: demanda predecible → last3 es el
+  //                mejor predictor; el histórico captura tendencias lentas.
+  //   INTERMITENTE 0.4×last3 + 0.6×histórico: volatilidad moderada → reducir peso
+  //                reciente evita sobre-reaccionar a picos o gaps aislados.
+  //   POR_PROYECTO 0.2×last3 + 0.8×histórico: un pedido puntual domina el last3;
+  //                el histórico largo es más representativo de la demanda base.
+  //
+  // Fuente del índice estacional:
+  //   CONTINUA: índice propio del SKU (obs suficientes para extraer patrón real).
+  //   INTERMITENTE / POR_PROYECTO: índice de categoría, que promedia el patrón
+  //   entre muchos SKUs y elimina el ruido de eventos puntuales individuales.
+  //
+  // Caps del factor estacional:
+  //   CONTINUA     [0.7, 1.5]: corrección amplia sobre base sólida de datos.
+  //   INTERMITENTE [0.6, 1.4]: mayor incertidumbre → ventana más conservadora.
+  //   POR_PROYECTO [0.5, 1.3]: índice de categoría ya suaviza; el cap evita
+  //                amplificar señales residuales no representativas del SKU.
+  //
+  // Ratios de estacionalidad por categoría (max mes / min mes)
+  const catRatiosMap: Record<string, number> = {};
+  for (const [prefix, catS] of Object.entries({
+    "113": season113, "121": season121, "112": season112,
+  } as Record<string, Record<number, number>>)) {
+    const vals = Object.values(catS).filter(v => v > 0);
+    catRatiosMap[prefix] = vals.length > 1 ? Math.max(...vals) / Math.min(...vals) : 1;
+  }
+  const allSeasonVals = Object.values(seasonAll).filter(v => v > 0);
+  const allRatioFallback = allSeasonVals.length > 1
+    ? Math.max(...allSeasonVals) / Math.min(...allSeasonVals) : 1;
+
+  const tipoDemandaMap: Record<string, "CONTINUA" | "INTERMITENTE" | "POR_PROYECTO"> = {};
+
+  for (const [id, v] of Object.entries(ventasMap)) {
+    const demAdj = v.months.map(m => m.demanda_adj ?? m.qty);
+    const n = demAdj.length;
+    const pctCero = demAdj.filter(x => x === 0).length / (n || 1);
+    const mean = demAdj.reduce((a, b) => a + b, 0) / (n || 1);
+    const cv = mean > 0
+      ? Math.sqrt(demAdj.map(x => Math.pow(x - mean, 2)).reduce((a, b) => a + b, 0) / (n || 1)) / mean
+      : 0;
+    // CV solo sobre meses NORMAL originales (sin imputados ni SIN_DEMANDA)
+    const normVals = v.months.filter(m => m.fuente_adj === "ORIGINAL").map(m => m.demanda_adj ?? m.qty);
+    const nN = normVals.length;
+    const mN = nN > 0 ? normVals.reduce((a, b) => a + b, 0) / nN : 0;
+    const cvNorm = mN > 0
+      ? Math.sqrt(normVals.map(x => Math.pow(x - mN, 2)).reduce((a, b) => a + b, 0) / (nN || 1)) / mN
+      : 0;
+    const catRatio = catRatiosMap[id.substring(0, 3)] ?? allRatioFallback;
+
+    let tipo: "CONTINUA" | "INTERMITENTE" | "POR_PROYECTO";
+    // POR_PROYECTO: >50% ceros o CV total >1.5 (picos dispersos)
+    if (pctCero > 0.50 || cv > 1.50) {
+      tipo = "POR_PROYECTO";
+    // CONTINUA: cond1 (bajo cero + CV_normal bajo) O cond2 (bajo cero + estacionalidad alta de categoría)
+    } else if ((pctCero < 0.15 && cvNorm < 0.60) || (pctCero < 0.15 && catRatio > 2.50)) {
+      tipo = "CONTINUA";
+    } else {
+      tipo = "INTERMITENTE";
+    }
+
+    tipoDemandaMap[id] = tipo;
+  }
+
   // ── 2.9. Índices estacionales por SKU + RUNRATE_ESTACIONAL ───────────────
   const TODAY = new Date();
 
@@ -638,8 +722,11 @@ function buildData() {
     const catAvg = Object.values(catSeason).reduce((a,b)=>a+b,0) / 12;
 
     const indices: Record<number, number> = {};
+    const tipoIdx = tipoDemandaMap[id] ?? "CONTINUA";
     for (let m = 1; m <= 12; m++) {
-      if (monthVals[m].length >= 2 && annualAvg > 0) {
+      // CONTINUA: índice propio si hay ≥2 obs, sino categoría
+      // INTERMITENTE / POR_PROYECTO: siempre categoría (índice propio contaminado por eventos puntuales)
+      if (tipoIdx === "CONTINUA" && monthVals[m].length >= 2 && annualAvg > 0) {
         indices[m] = monthAvgs[m] / annualAvg;
       } else {
         indices[m] = catAvg > 0 ? catSeason[m] / catAvg : 1;
@@ -650,9 +737,12 @@ function buildData() {
 
   // Calcular RUNRATE_ESTACIONAL por SKU
   interface RREstData {
-    projectedMonth: number; idxProyectado: number; idxLast3: number;
+    projectedMonth: number; projectedMonth2: number;
+    idxProy1: number; idxProy2: number;
+    idxProyectado: number; idxLast3: number;
     factorRaw: number; factorEstacional: number;
     runrateAdj: number; runrateEstacional: number; capApplied: boolean;
+    tipo: string;
   }
   const skuRRE: Record<string, RREstData> = {};
   let capSuperior = 0, capInferior = 0;
@@ -670,26 +760,37 @@ function buildData() {
     const avgHist  = demAdj.reduce((a,b)=>a+b,0) / (demAdj.length||1);
     const last3Adj = demAdj.slice(-3);
     const avgLast3 = last3Adj.reduce((a,b)=>a+b,0) / (last3Adj.length||1);
-    const runrateAdj = 0.7 * avgLast3 + 0.3 * avgHist;
+    const tipo = tipoDemandaMap[id] ?? "CONTINUA";
+    const [w3, wH] = tipo === "POR_PROYECTO" ? [0.2, 0.8]
+                   : tipo === "INTERMITENTE"  ? [0.4, 0.6]
+                   :                           [0.7, 0.3];
+    const runrateAdj = w3 * avgLast3 + wH * avgHist;
 
     const idx = skuSeasonIdx[id];
-    const idxProyectado = idx[projectedMonth] ?? 1;
+    const projectedMonth2 = projectedMonth === 12 ? 1 : projectedMonth + 1;
+    const idxProy1 = idx[projectedMonth] ?? 1;
+    const idxProy2 = idx[projectedMonth2] ?? 1;
+    const idxProyectado = (idxProy1 + idxProy2) / 2;
     const last3MonthNums = v.months.slice(-3).map(m => m.month);
     const idxLast3 = last3MonthNums.map(m => idx[m] ?? 1).reduce((a,b)=>a+b,0) / last3MonthNums.length;
 
     const factorRaw = idxLast3 > 0 ? idxProyectado / idxLast3 : 1;
-    const factorEstacional = Math.min(Math.max(factorRaw, 0.7), 1.5);
+    const [capLo, capHi] = tipo === "POR_PROYECTO" ? [0.5, 1.3]
+                         : tipo === "INTERMITENTE"  ? [0.6, 1.4]
+                         :                           [0.7, 1.5];
+    const factorEstacional = Math.min(Math.max(factorRaw, capLo), capHi);
     const capApplied = Math.abs(factorRaw - factorEstacional) > 0.001;
-    if (factorRaw > 1.5) capSuperior++;
-    if (factorRaw < 0.7) capInferior++;
+    if (factorRaw > capHi) capSuperior++;
+    if (factorRaw < capLo) capInferior++;
 
     const runrateEstacional = runrateAdj * factorEstacional;
     const runrateOld = qtyOrig.reduce((a,b)=>a+b,0) / (qtyOrig.length||1);
     sumaRRE += runrateEstacional;
     sumaAntigua2 += runrateOld;
 
-    skuRRE[id] = { projectedMonth, idxProyectado, idxLast3, factorRaw,
-                   factorEstacional, runrateAdj, runrateEstacional, capApplied };
+    skuRRE[id] = { projectedMonth, projectedMonth2, idxProy1, idxProy2,
+                   idxProyectado, idxLast3, factorRaw,
+                   factorEstacional, runrateAdj, runrateEstacional, capApplied, tipo };
   }
 
   // Diagnóstico — top decrementos
@@ -719,6 +820,93 @@ function buildData() {
   console.log(`    Suma RR_ESTACIONAL       ${sumaRRE.toFixed(1)}`);
   console.log(`    Cambio porcentual        ${cambioPctRRE >= 0 ? "+" : ""}${cambioPctRRE.toFixed(2)}%`);
   console.log("──────────────────────────────────────────");
+
+  // ── 2.9b. Reporte de validación final ─────────────────────────────────────
+  {
+    const totalRRAdj2 = Object.values(skuRRE).reduce((s, d) => s + d.runrateAdj, 0);
+    const tipoStats: Record<string, { count: number; pesoRR: number }> = {
+      CONTINUA:     { count: 0, pesoRR: 0 },
+      INTERMITENTE: { count: 0, pesoRR: 0 },
+      POR_PROYECTO: { count: 0, pesoRR: 0 },
+    };
+    for (const [, d] of Object.entries(skuRRE)) {
+      const t = d.tipo as keyof typeof tipoStats;
+      tipoStats[t].count++;
+      tipoStats[t].pesoRR += totalRRAdj2 > 0 ? d.runrateAdj / totalRRAdj2 : 0;
+    }
+    // ── 1. Distribución final ──────────────────────────────────────────────
+    console.log("══ REPORTE VALIDACIÓN FINAL ═══════════════════════════════");
+    console.log("\n── 1. Distribución final de tipos ──────────────────────────");
+    console.log("  Tipo             SKUs   % Portafolio  Fórmula          Cap");
+    const tipoMeta: Record<string, { formula: string; cap: string }> = {
+      CONTINUA:     { formula: "0.7×L3 + 0.3×H", cap: "[0.7, 1.5]" },
+      INTERMITENTE: { formula: "0.4×L3 + 0.6×H", cap: "[0.6, 1.4]" },
+      POR_PROYECTO: { formula: "0.2×L3 + 0.8×H", cap: "[0.5, 1.3]" },
+    };
+    for (const [t, s] of Object.entries(tipoStats)) {
+      const m = tipoMeta[t];
+      console.log(
+        `  ${t.padEnd(16)} ${String(s.count).padStart(4)}   ${(s.pesoRR*100).toFixed(1).padStart(5)}%` +
+        `  ${m.formula.padEnd(16)}  ${m.cap}`
+      );
+    }
+
+    // ── 2. Validación individual de 4 SKUs ───────────────────────────────
+    console.log("\n── 2. Validación SKUs clave ────────────────────────────────");
+    console.log("  SKU      TIPO          FÓRMULA          CAP         F_RAW   F_EST   RR_ADJ   RR_EST  NOMBRE");
+    for (const id of ["131010", "113005", "112017", "121023"]) {
+      const rre = skuRRE[id]; const v = ventasMap[id];
+      if (!rre || !v) continue;
+      const m = tipoMeta[rre.tipo];
+      console.log(
+        `  ${id.padEnd(8)} ${rre.tipo.padEnd(13)} ` +
+        `${m.formula.padEnd(16)} ${m.cap.padEnd(11)} ` +
+        `${rre.factorRaw.toFixed(3).padStart(6)}  ` +
+        `${rre.factorEstacional.toFixed(3).padStart(6)}  ` +
+        `${rre.runrateAdj.toFixed(1).padStart(7)}  ` +
+        `${rre.runrateEstacional.toFixed(1).padStart(7)}` +
+        `  ${v.name.substring(0, 26)}`
+      );
+    }
+
+    // ── 3. Muestra PP→INT: SKUs que eran POR_PROYECTO con regla anterior ─
+    // Regla anterior: pctCero>0.60 OR cv>1.20 → PP
+    const ppToInt: { id: string; name: string; pctCero: number; cvNorm: number; cvAll: number }[] = [];
+    for (const [id, d] of Object.entries(skuRRE)) {
+      if (d.tipo !== "INTERMITENTE") continue;
+      const v = ventasMap[id];
+      const demAdj = v.months.map(m => m.demanda_adj ?? m.qty);
+      const n = demAdj.length;
+      const pctCero = demAdj.filter(x => x === 0).length / (n || 1);
+      const mean    = demAdj.reduce((a,b)=>a+b,0) / (n||1);
+      const cvAll   = mean > 0 ? Math.sqrt(demAdj.map(x=>Math.pow(x-mean,2)).reduce((a,b)=>a+b,0)/(n||1))/mean : 0;
+      if (!(pctCero > 0.60 || cvAll > 1.20)) continue; // sólo los que cambiarion PP→INT
+      const normVals = v.months.filter(m => m.fuente_adj === "ORIGINAL").map(m => m.demanda_adj ?? m.qty);
+      const nN = normVals.length;
+      const mN = nN > 0 ? normVals.reduce((a,b)=>a+b,0)/nN : 0;
+      const cvNorm = mN > 0 ? Math.sqrt(normVals.map(x=>Math.pow(x-mN,2)).reduce((a,b)=>a+b,0)/(nN||1))/mN : 0;
+      ppToInt.push({ id, name: v.name, pctCero, cvNorm, cvAll });
+    }
+    ppToInt.sort((a, b) => a.pctCero - b.pctCero);
+    console.log(`\n── 3. Muestra PP→INT (${ppToInt.length} SKUs cambiaron) ──────────────────`);
+    console.log("  SKU      %CERO  CV_ALL  CV_NORM  ANTES         AHORA         NOMBRE");
+    for (const x of ppToInt.slice(0, 5)) {
+      console.log(
+        `  ${x.id.padEnd(8)} ${(x.pctCero*100).toFixed(0).padStart(4)}%` +
+        `  ${x.cvAll.toFixed(2).padStart(6)}` +
+        `  ${x.cvNorm.toFixed(2).padStart(7)}` +
+        `  ${"POR_PROYECTO".padEnd(13)}  INTERMITENTE  ${x.name.substring(0, 24)}`
+      );
+    }
+
+    // ── 4. Cambio porcentual definitivo ──────────────────────────────────
+    console.log(`\n── 4. Cambio porcentual agregado DEFINITIVO ─────────────────`);
+    console.log(`   Suma simple antiguo (baseline):    ${sumaAntigua2.toFixed(1)}`);
+    console.log(`   Suma RUNRATE_ESTACIONAL final:     ${sumaRRE.toFixed(1)}`);
+    console.log(`   Δ% definitivo vs antiguo:          ${cambioPctRRE >= 0 ? "+" : ""}${cambioPctRRE.toFixed(2)}%`);
+    console.log("──────────────────────────────────────────");
+  }
+
 
   // ── 3. Build supplies list ──
   const supplies = Object.entries(ventasMap).map(([id, v]) => {
@@ -776,6 +964,7 @@ function buildData() {
       factor_raw:         rre ? Number(rre.factorRaw.toFixed(3))         : 1,
       factor_estacional:  rre ? Number(rre.factorEstacional.toFixed(3))  : 1,
       projected_month:    rre?.projectedMonth ?? 1,
+      tipo_demanda:       tipoDemandaMap[id] ?? "CONTINUA",
     };
   });
 
