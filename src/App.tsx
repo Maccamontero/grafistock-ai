@@ -363,96 +363,80 @@ export default function App() {
           </div>
 
           <TabsContent value="dashboard">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Sidebar: Product List */}
-              <div className="lg:col-span-3 space-y-6">
-                <Card className="border-gray-200 shadow-sm">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                      <Package className="w-4 h-4 text-orange-600" />
-                      Catálogo de Insumos
-                    </CardTitle>
-                    <div className="relative mt-2" ref={searchRef}>
-                      <Search className="absolute left-2 top-2.5 h-3 w-3 text-gray-400 z-10" />
-                      <input
-                        type="text"
-                        value={searchTerm}
-                        placeholder="Buscar por nombre o SKU..."
-                        className="w-full pl-8 pr-4 py-2 text-xs border border-gray-200 rounded-md focus:ring-1 focus:ring-orange-500 outline-none"
-                        onChange={(e) => { setSearchTerm(e.target.value); setShowSuggestions(true); }}
-                        onFocus={() => setShowSuggestions(true)}
-                        onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-                      />
-                      {searchTerm && (
-                        <button
-                          className="absolute right-2 top-2 text-gray-300 hover:text-gray-500"
-                          onMouseDown={() => { setSearchTerm(""); setShowSuggestions(false); }}
-                        >✕</button>
-                      )}
-                      {showSuggestions && suggestions.length > 0 && (
-                        <div className="absolute z-30 w-full bg-white border border-gray-200 rounded-md shadow-lg mt-1 max-h-56 overflow-auto">
-                          {suggestions.map(s => (
-                            <button
-                              key={s.id}
-                              className="w-full text-left px-3 py-2 hover:bg-orange-50 transition-colors border-b border-gray-50 last:border-0"
-                              onMouseDown={() => {
-                                setSearchTerm(s.name);
-                                setSelectedItem(s.id);
-                                setShowSuggestions(false);
-                              }}
-                            >
-                              <p className="text-xs font-medium text-gray-800 truncate">{s.name}</p>
-                              <p className="text-[10px] text-gray-400 font-mono">{s.id} · {s.category}</p>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </CardHeader>
-                  <CardContent className="p-0">
-                    <ScrollArea className="h-[calc(100vh-340px)]">
-                      <div className="divide-y divide-gray-100">
-                        {filteredSupplies.map((item) => {
-                          const iInv = invMap[item.id];
-                          const zona = iInv?.zona;
-                          const zonaDot = zona === "PELIGRO" ? "bg-red-500" : zona === "OPORTUNIDAD" ? "bg-yellow-400" : zona === "CONFORT" ? "bg-green-500" : "bg-gray-300";
-                          const entra = iInv?.entra_contenedor;
-                          return (
+            <div className="space-y-4">
+              {/* Catálogo horizontal */}
+              <Card className="border-gray-200 shadow-sm">
+                <div className="flex items-center gap-3 px-4 py-2">
+                  <Package className="w-4 h-4 text-orange-600 shrink-0" />
+                  {/* Search */}
+                  <div className="relative shrink-0 w-56" ref={searchRef}>
+                    <Search className="absolute left-2 top-2 h-3 w-3 text-gray-400 z-10" />
+                    <input
+                      type="text"
+                      value={searchTerm}
+                      placeholder="Buscar nombre o SKU..."
+                      className="w-full pl-7 pr-6 py-1.5 text-xs border border-gray-200 rounded-md focus:ring-1 focus:ring-orange-500 outline-none"
+                      onChange={(e) => { setSearchTerm(e.target.value); setShowSuggestions(true); }}
+                      onFocus={() => setShowSuggestions(true)}
+                      onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                    />
+                    {searchTerm && (
+                      <button
+                        className="absolute right-2 top-1.5 text-gray-300 hover:text-gray-500 text-xs"
+                        onMouseDown={() => { setSearchTerm(""); setShowSuggestions(false); }}
+                      >✕</button>
+                    )}
+                    {showSuggestions && suggestions.length > 0 && (
+                      <div className="absolute z-30 w-72 bg-white border border-gray-200 rounded-md shadow-lg mt-1 max-h-56 overflow-auto">
+                        {suggestions.map(s => (
+                          <button
+                            key={s.id}
+                            className="w-full text-left px-3 py-2 hover:bg-orange-50 transition-colors border-b border-gray-50 last:border-0"
+                            onMouseDown={() => {
+                              setSearchTerm(s.name);
+                              setSelectedItem(s.id);
+                              setShowSuggestions(false);
+                            }}
+                          >
+                            <p className="text-xs font-medium text-gray-800 truncate">{s.name}</p>
+                            <p className="text-[10px] text-gray-400 font-mono">{s.id} · {s.category}</p>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {/* Horizontal pill list */}
+                  <div className="flex-1 overflow-x-auto">
+                    <div className="flex gap-1.5 pb-0.5" style={{ width: "max-content" }}>
+                      {filteredSupplies.map((item) => {
+                        const iInv = invMap[item.id];
+                        const zona = iInv?.zona;
+                        const dotColor = zona === "PELIGRO" ? "bg-red-500" : zona === "OPORTUNIDAD" ? "bg-yellow-400" : zona === "CONFORT" ? "bg-green-500" : "bg-gray-300";
+                        const isSelected = selectedItem === item.id;
+                        return (
                           <button
                             key={item.id}
                             onClick={() => setSelectedItem(item.id)}
-                            className={`w-full text-left px-4 py-3 transition-colors hover:bg-gray-50 ${
-                              selectedItem === item.id ? "bg-orange-50 border-l-4 border-orange-600" : ""
+                            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-[11px] font-medium whitespace-nowrap transition-colors ${
+                              isSelected
+                                ? "bg-orange-600 text-white border-orange-600"
+                                : "bg-white text-gray-700 border-gray-200 hover:border-orange-400 hover:text-orange-700"
                             }`}
                           >
-                            <div className="flex justify-between items-start mb-1">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <span className={`w-2 h-2 rounded-full shrink-0 ${zonaDot}`} title={zona ?? "—"} />
-                                <span className={`font-medium text-xs truncate ${selectedItem === item.id ? "text-orange-900" : ""}`}>
-                                  {item.name}
-                                </span>
-                              </div>
-                              {entra && (
-                                <span className="text-[9px] bg-orange-100 text-orange-700 font-bold px-1.5 py-0.5 rounded shrink-0 ml-1">CONT.</span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2 text-[10px] text-gray-400 font-mono">
-                              <span>{item.id}</span>
-                              {iInv?.revisar_precio && (
-                                <span className="text-yellow-600 font-bold">⚠ PRECIO</span>
-                              )}
-                            </div>
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isSelected ? "bg-white" : dotColor}`} />
+                            <span className="max-w-[140px] truncate">{item.name}</span>
+                            <span className={`font-mono text-[9px] ${isSelected ? "text-orange-200" : "text-gray-400"}`}>{item.id}</span>
+                            {iInv?.revisar_precio && !isSelected && <span className="text-yellow-500">⚠</span>}
                           </button>
-                          );
-                        })}
-                      </div>
-                    </ScrollArea>
-                  </CardContent>
-                </Card>
-              </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </Card>
 
-              {/* Main Content */}
-              <div className="lg:col-span-9 space-y-6">
+              {/* Main Content — full width */}
+              <div className="space-y-6">
                 {selectedItem && currentItem && (
                   <AnimatePresence mode="wait">
                     <motion.div
