@@ -1,22 +1,20 @@
-export interface ForecastResult {
+export interface AnalysisResult {
   itemId: string;
-  predictedDemand: number;
-  confidence: number;
-  reasoning: string;
-  isSeasonal: boolean;
-  recommendedOrderDate: string;
+  cambio_estructural: string;
+  momentum_interpretacion: string;
+  observacion_cualitativa: string;
 }
 
 export async function analyzeDemand(
   item: any,
   history: any[],
-  currentStock: number,
-  leadTimeDays: number
-): Promise<ForecastResult> {
+  inv: any
+): Promise<AnalysisResult> {
+  const payload = { item, history, inv };
   const res = await fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ item, history, currentStock, leadTimeDays }),
+    body: JSON.stringify(payload),
   });
 
   if (!res.ok) {

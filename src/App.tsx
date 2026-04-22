@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { analyzeDemand, ForecastResult } from "@/src/lib/gemini";
+import { analyzeDemand, AnalysisResult } from "@/src/lib/gemini";
 import { calculateInventoryMetrics, InventoryStats } from "@/src/lib/inventoryStats";
 import { cleanSupplyChainData, MasterRecord } from "@/src/lib/dataCleaning";
 import { masterProducts, MasterProduct } from "@/src/data/masterProducts";
@@ -59,7 +59,7 @@ export default function App() {
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [inventory, setInventory] = useState<InventoryRecord[]>([]);
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
-  const [forecasts, setForecasts] = useState<Record<string, ForecastResult>>({});
+  const [forecasts, setForecasts] = useState<Record<string, AnalysisResult>>({});
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [chartMonths, setChartMonths] = useState<number | null>(null);
   const [isAnalysisOpen, setIsAnalysisOpen] = useState(false);
@@ -122,7 +122,7 @@ export default function App() {
 
     setIsAnalyzing(true);
     try {
-      const result = await analyzeDemand(item, itemHistory, itemInv.stock, item.leadTimeDays);
+      const result = await analyzeDemand(item, itemHistory, itemInv);
       setForecasts(prev => ({ ...prev, [itemId]: result }));
     } catch (error) {
       console.error("Error analyzing demand:", error);
@@ -710,27 +710,31 @@ export default function App() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         {currentForecast && (
                           <>
-                            <Card className="border-orange-200 bg-orange-50/30 shadow-sm">
+                            <Card className="border-orange-200 bg-orange-50/30 shadow-sm md:col-span-2">
                               <CardHeader className="pb-2">
                                 <CardTitle className="text-sm font-bold flex items-center gap-2 text-orange-800">
                                   <BrainCircuit className="w-4 h-4" />
-                                  Diagnóstico AI
+                                  Análisis Interpretativo AI
                                 </CardTitle>
                               </CardHeader>
                               <CardContent className="space-y-4">
-                                <div className="flex items-start gap-3">
-                                  <CheckCircle2 className="w-5 h-5 text-green-600 mt-0.5" />
-                                  <div>
-                                    <p className="text-sm font-semibold text-gray-900">Patrón Identificado</p>
-                                    <p className="text-xs text-gray-600">
-                                      {currentForecast.isSeasonal 
-                                        ? "Se detecta estacionalidad clara." 
-                                        : "Comportamiento principalmente reactivo."}
-                                    </p>
-                                  </div>
+                                <div className="space-y-1">
+                                  <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">1. Cambio estructural reciente</p>
+                                  <p className="text-[11px] text-gray-700 leading-relaxed bg-white rounded-lg border border-orange-100 p-2">
+                                    {currentForecast.cambio_estructural}
+                                  </p>
                                 </div>
-                                <div className="p-2 bg-white rounded-lg border border-orange-100 italic text-[11px] text-gray-700 leading-relaxed">
-                                  "{currentForecast.reasoning}"
+                                <div className="space-y-1">
+                                  <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">2. Interpretación de momentum</p>
+                                  <p className="text-[11px] text-gray-700 leading-relaxed bg-white rounded-lg border border-orange-100 p-2">
+                                    {currentForecast.momentum_interpretacion}
+                                  </p>
+                                </div>
+                                <div className="space-y-1">
+                                  <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">3. Observación cualitativa</p>
+                                  <p className="text-[11px] text-gray-700 leading-relaxed bg-white rounded-lg border border-orange-100 p-2">
+                                    {currentForecast.observacion_cualitativa}
+                                  </p>
                                 </div>
                               </CardContent>
                             </Card>
