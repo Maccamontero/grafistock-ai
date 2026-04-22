@@ -43,6 +43,30 @@ interface InventoryRecord {
   ventas_mensuales?: number[];
   inventario_mensual?: Record<string, number>;
   in_transito?: Record<string, {cantidad:number; fechaOrden:string; fechaLlegada:string; proveedor:string}[]>;
+  // Back-end model fields
+  runrate_adj?: number;
+  runrate_estacional?: number;
+  idx_proyectado?: number;
+  idx_last3?: number;
+  factor_estacional?: number;
+  projected_month?: number;
+  tipo_demanda?: "CONTINUA" | "INTERMITENTE" | "POR_PROYECTO";
+  cv_cap?: number;
+  cover_p50?: number;
+  cover_p75?: number;
+  cover_p90?: number;
+  sug_p50?: number;
+  sug_p75?: number;
+  sug_p90?: number;
+  inv_arribo?: number;
+  sugerido_final?: number;
+  escenario_default?: string;
+  ancho_corredor?: number;
+  doh?: number;
+  zona?: "PELIGRO" | "CONFORT" | "OPORTUNIDAD";
+  entra_contenedor?: boolean;
+  sugerido_gob?: number;
+  revisar_precio?: boolean;
 }
 
 // Parse "dd-MM-yy" → "YYYY-MM"
@@ -153,6 +177,12 @@ export default function App() {
       p.codigo.includes(searchTerm)
     );
   }, [searchTerm]);
+
+  const invMap = useMemo(() => {
+    const m: Record<string, InventoryRecord> = {};
+    inventory.forEach(r => { m[r.itemId] = r; });
+    return m;
+  }, [inventory]);
 
   const currentItem = supplies.find(s => s.id === selectedItem);
   const currentInv = inventory.find(i => i.itemId === selectedItem);
@@ -382,7 +412,12 @@ export default function App() {
                   <CardContent className="p-0">
                     <ScrollArea className="h-[calc(100vh-340px)]">
                       <div className="divide-y divide-gray-100">
-                        {filteredSupplies.map((item) => (
+                        {filteredSupplies.map((item) => {
+                          const iInv = invMap[item.id];
+                          const zona = iInv?.zona;
+                          const zonaDot = zona === "PELIGRO" ? "bg-red-500" : zona === "OPORTUNIDAD" ? "bg-yellow-400" : zona === "CONFORT" ? "bg-green-500" : "bg-gray-300";
+                          const entra = iInv?.entra_contenedor;
+                          return (
                           <button
                             key={item.id}
                             onClick={() => setSelectedItem(item.id)}
@@ -391,23 +426,25 @@ export default function App() {
                             }`}
                           >
                             <div className="flex justify-between items-start mb-1">
-                              <span className={`font-medium text-xs truncate ${selectedItem === item.id ? "text-orange-900" : ""}`}>
-                                {item.name}
-                              </span>
-                              <Badge variant="secondary" className="text-[10px] uppercase font-bold shrink-0 ml-2">
-                                {item.category}
-                              </Badge>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className={`w-2 h-2 rounded-full shrink-0 ${zonaDot}`} title={zona ?? "—"} />
+                                <span className={`font-medium text-xs truncate ${selectedItem === item.id ? "text-orange-900" : ""}`}>
+                                  {item.name}
+                                </span>
+                              </div>
+                              {entra && (
+                                <span className="text-[9px] bg-orange-100 text-orange-700 font-bold px-1.5 py-0.5 rounded shrink-0 ml-1">CONT.</span>
+                              )}
                             </div>
-                            <div className="flex items-center gap-1 text-[10px] text-gray-400 font-mono mb-1">
-                              <Package className="w-3 h-3" />
-                              <span>SKU: {item.id}</span>
-                            </div>
-                            <div className="flex items-center gap-1 text-[10px] text-gray-500">
-                              <Ship className="w-3 h-3" />
-                              <span>Lead Time: {item.leadTimeDays} días</span>
+                            <div className="flex items-center gap-2 text-[10px] text-gray-400 font-mono">
+                              <span>{item.id}</span>
+                              {iInv?.revisar_precio && (
+                                <span className="text-yellow-600 font-bold">⚠ PRECIO</span>
+                              )}
                             </div>
                           </button>
-                        ))}
+                          );
+                        })}
                       </div>
                     </ScrollArea>
                   </CardContent>
@@ -427,69 +464,76 @@ export default function App() {
                       className="space-y-6"
                     >
                       {/* Top Stats */}
-                      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                        <Card className="border-gray-200 shadow-sm">
-                          <CardContent className="pt-6">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Stock Actual</p>
-                                <h3 className="text-2xl font-bold">{currentInv?.stock} <span className="text-sm font-normal text-gray-400">{currentItem.unit}s</span></h3>
+                      {(() => {
+                        const zona = currentInv?.zona;
+                        const zonaBg = zona === "PELIGRO" ? "bg-red-50 border-red-200" : zona === "OPORTUNIDAD" ? "bg-yellow-50 border-yellow-200" : "bg-green-50 border-green-200";
+                        const zonaText = zona === "PELIGRO" ? "text-red-700" : zona === "OPORTUNIDAD" ? "text-yellow-700" : "text-green-700";
+                        const zonaIcon = zona === "PELIGRO" ? <AlertTriangle className="w-6 h-6 text-red-600" /> : zona === "OPORTUNIDAD" ? <TrendingUp className="w-6 h-6 text-yellow-600" /> : <CheckCircle2 className="w-6 h-6 text-green-600" />;
+                        const doh = currentInv?.doh;
+                        const dohStr = doh === 9999 ? "∞" : doh != null ? String(doh) : "--";
+                        const tipo = currentInv?.tipo_demanda;
+                        const tipoBadgeColor = tipo === "CONTINUA" ? "bg-blue-100 text-blue-700" : tipo === "INTERMITENTE" ? "bg-purple-100 text-purple-700" : "bg-gray-100 text-gray-600";
+                        return (
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                          <Card className="border-gray-200 shadow-sm">
+                            <CardContent className="pt-6">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Stock Actual</p>
+                                  <h3 className="text-2xl font-bold">{currentInv?.stock?.toLocaleString()} <span className="text-sm font-normal text-gray-400">{currentItem.unit}s</span></h3>
+                                  {tipo && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded mt-1 inline-block ${tipoBadgeColor}`}>{tipo}</span>}
+                                </div>
+                                <div className="p-3 bg-blue-50 rounded-full">
+                                  <Package className="w-6 h-6 text-blue-600" />
+                                </div>
                               </div>
-                              <div className="p-3 bg-blue-50 rounded-full">
-                                <Package className="w-6 h-6 text-blue-600" />
+                            </CardContent>
+                          </Card>
+                          <Card className="border-gray-200 shadow-sm">
+                            <CardContent className="pt-6">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">DOH (Cobertura)</p>
+                                  <h3 className="text-2xl font-bold">{dohStr} <span className="text-sm font-normal text-gray-400">días</span></h3>
+                                  <p className="text-[10px] text-gray-400 mt-1">Stock actual / demanda diaria</p>
+                                </div>
+                                <div className="p-3 bg-orange-50 rounded-full">
+                                  <Calendar className="w-6 h-6 text-orange-600" />
+                                </div>
                               </div>
-                            </div>
-                          </CardContent>
-                        </Card>
-                        <Card className="border-gray-200 shadow-sm">
-                          <CardContent className="pt-6">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">En Tránsito</p>
-                                <h3 className="text-2xl font-bold">{currentInv?.onOrder} <span className="text-sm font-normal text-gray-400">{currentItem.unit}s</span></h3>
+                            </CardContent>
+                          </Card>
+                          <Card className={`border shadow-sm ${zonaBg}`}>
+                            <CardContent className="pt-6">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Zona al Arribo</p>
+                                  <h3 className={`text-2xl font-bold ${zonaText}`}>{zona ?? "--"}</h3>
+                                  <p className="text-[10px] text-gray-500 mt-1">INV_ARRIBO vs corredor</p>
+                                </div>
+                                <div className={`p-3 rounded-full ${zona === "PELIGRO" ? "bg-red-100" : zona === "OPORTUNIDAD" ? "bg-yellow-100" : "bg-green-100"}`}>
+                                  {zonaIcon}
+                                </div>
                               </div>
-                              <div className="p-3 bg-green-50 rounded-full">
-                                <Ship className="w-6 h-6 text-green-600" />
+                            </CardContent>
+                          </Card>
+                          <Card className="border-gray-200 shadow-sm">
+                            <CardContent className="pt-6">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Sugerido Contenedor</p>
+                                  <h3 className="text-2xl font-bold">{currentInv?.sugerido_gob?.toLocaleString() ?? "--"} <span className="text-sm font-normal text-gray-400">{currentItem.unit}s</span></h3>
+                                  <p className="text-[10px] text-gray-400 mt-1">{currentInv?.entra_contenedor ? "✓ Entra al contenedor" : "— No entra este ciclo"}</p>
+                                </div>
+                                <div className="p-3 bg-purple-50 rounded-full">
+                                  <Layers className="w-6 h-6 text-purple-600" />
+                                </div>
                               </div>
-                            </div>
-                          </CardContent>
-                        </Card>
-                        <Card className="border-gray-200 shadow-sm">
-                          <CardContent className="pt-6">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Días Cobertura</p>
-                                <h3 className="text-2xl font-bold">
-                                  {currentInv?.ventas_mensuales?.length
-                                    ? (() => {
-                                        const avg = currentInv.ventas_mensuales.reduce((a, b) => a + b, 0) / currentInv.ventas_mensuales.length;
-                                        return avg > 0 ? Math.round(currentInv.stock / (avg / 30)) : "--";
-                                      })()
-                                    : "--"}
-                                </h3>
-                              </div>
-                              <div className="p-3 bg-orange-50 rounded-full">
-                                <Calendar className="w-6 h-6 text-orange-600" />
-                              </div>
-                            </div>
-                          </CardContent>
-                        </Card>
-                        <Card className="border-gray-200 shadow-sm">
-                          <CardContent className="pt-6">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">P90 (Demanda)</p>
-                                <h3 className="text-2xl font-bold">
-                                  {currentStats?.p90 || "--"}
-                                </h3>
-                              </div>
-                              <div className="p-3 bg-purple-50 rounded-full">
-                                <Calculator className="w-6 h-6 text-purple-600" />
-                              </div>
-                            </div>
-                          </CardContent>
-                        </Card>
-                      </div>
+                            </CardContent>
+                          </Card>
+                        </div>
+                        );
+                      })()}
 
                       {/* Main Chart: Demand + Inventory Correlation */}
                       <Card className="border-gray-200 shadow-sm">
@@ -706,6 +750,91 @@ export default function App() {
                         </CardContent>
                       </Card>
 
+                      {/* Corredor de Compra */}
+                      {currentInv?.cover_p50 != null && (
+                        <Card className="border-gray-200 shadow-sm">
+                          <CardHeader className="pb-3">
+                            <div className="flex items-center justify-between flex-wrap gap-2">
+                              <CardTitle className="text-sm font-bold flex items-center gap-2">
+                                <Layers className="w-4 h-4 text-purple-600" />
+                                Corredor de Compra P50 / P75 / P90
+                              </CardTitle>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-[10px] font-mono text-gray-500">RRE: {currentInv.runrate_estacional?.toLocaleString()}</span>
+                                <span className="text-[10px] font-mono text-gray-500">Ancho: {currentInv.ancho_corredor?.toFixed(1)}%</span>
+                                {currentInv.revisar_precio && (
+                                  <span className="text-[10px] bg-yellow-100 text-yellow-800 font-bold px-2 py-0.5 rounded-full">⚠ Revisar Precio</span>
+                                )}
+                              </div>
+                            </div>
+                          </CardHeader>
+                          <CardContent className="space-y-4">
+                            {/* Escenarios P50 / P75 / P90 */}
+                            <div className="grid grid-cols-3 gap-3">
+                              {(["P50","P75","P90"] as const).map(esc => {
+                                const isDefault = currentInv.escenario_default === esc;
+                                const sug = esc === "P50" ? currentInv.sug_p50 : esc === "P75" ? currentInv.sug_p75 : currentInv.sug_p90;
+                                const cover = esc === "P50" ? currentInv.cover_p50 : esc === "P75" ? currentInv.cover_p75 : currentInv.cover_p90;
+                                return (
+                                  <div key={esc} className={`rounded-lg p-3 border ${isDefault ? "border-purple-400 bg-purple-50" : "border-gray-200 bg-gray-50"}`}>
+                                    <div className="flex items-center justify-between mb-1">
+                                      <span className={`text-xs font-bold ${isDefault ? "text-purple-700" : "text-gray-500"}`}>{esc}</span>
+                                      {isDefault && <span className="text-[9px] bg-purple-600 text-white font-bold px-1.5 py-0.5 rounded">DEFAULT</span>}
+                                    </div>
+                                    <p className={`text-lg font-black ${isDefault ? "text-purple-900" : "text-gray-700"}`}>{sug?.toLocaleString()}</p>
+                                    <p className="text-[10px] text-gray-400">cobertura: {cover?.toLocaleString()}</p>
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* Barra visual del corredor */}
+                            {(() => {
+                              const p50 = currentInv.cover_p50 ?? 0;
+                              const p90 = currentInv.cover_p90 ?? 1;
+                              const arr = currentInv.inv_arribo ?? 0;
+                              const pctArr = Math.min(Math.max(arr / p90, 0), 1.2);
+                              const arrPx = Math.round(pctArr * 100);
+                              return (
+                                <div className="space-y-1">
+                                  <div className="flex justify-between text-[10px] text-gray-400">
+                                    <span>0</span><span>P50: {p50.toLocaleString()}</span><span>P90: {p90.toLocaleString()}</span>
+                                  </div>
+                                  <div className="relative h-5 bg-gray-100 rounded-full overflow-hidden">
+                                    <div className="absolute inset-0 bg-gradient-to-r from-red-200 via-green-200 to-yellow-200 rounded-full" />
+                                    <div
+                                      className="absolute top-1 bottom-1 w-1.5 rounded-full bg-blue-600 shadow"
+                                      style={{ left: `${Math.min(arrPx, 95)}%` }}
+                                      title={`INV_ARRIBO: ${arr.toLocaleString()}`}
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-gray-500 text-center">
+                                    INV_ARRIBO: <span className="font-bold text-blue-700">{arr.toLocaleString()}</span>
+                                    {" "} · CONSUMO_LT: {((currentInv.stock ?? 0) - arr).toLocaleString()}
+                                  </p>
+                                </div>
+                              );
+                            })()}
+
+                            {/* Resultado de gobernanza */}
+                            <div className={`flex items-center justify-between rounded-lg p-3 ${currentInv.entra_contenedor ? "bg-orange-50 border border-orange-200" : "bg-gray-50 border border-gray-200"}`}>
+                              <div>
+                                <p className="text-xs font-bold text-gray-600 uppercase tracking-wide">Sugerido post-gobernanza</p>
+                                <p className={`text-2xl font-black ${currentInv.entra_contenedor ? "text-orange-700" : "text-gray-400"}`}>
+                                  {currentInv.sugerido_gob?.toLocaleString()} <span className="text-sm font-normal">{currentItem.unit}s</span>
+                                </p>
+                              </div>
+                              <div className="text-right">
+                                <p className={`text-xs font-bold ${currentInv.entra_contenedor ? "text-orange-700" : "text-gray-400"}`}>
+                                  {currentInv.entra_contenedor ? "✓ ENTRA AL CONTENEDOR" : "— NO ENTRA ESTE CICLO"}
+                                </p>
+                                <p className="text-[10px] text-gray-400 mt-0.5">Escenario {currentInv.escenario_default}</p>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      )}
+
                       {/* AI Insights Section */}
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         {currentForecast && (
@@ -815,16 +944,20 @@ export default function App() {
                                   <span className="text-xs font-mono font-medium">{currentItem.id}</span>
                                 </div>
                                 <div className="flex justify-between">
-                                  <span className="text-xs text-gray-500">Pedido Sugerido</span>
-                                  <span className="text-xs font-bold text-orange-600">200 {currentItem.unit}s</span>
+                                  <span className="text-xs text-gray-500">Zona al Arribo</span>
+                                  <span className={`text-xs font-bold ${currentInv?.zona === "PELIGRO" ? "text-red-600" : currentInv?.zona === "OPORTUNIDAD" ? "text-yellow-600" : "text-green-600"}`}>{currentInv?.zona ?? "--"}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-xs text-gray-500">Pedido Sugerido (GOB)</span>
+                                  <span className="text-xs font-bold text-orange-600">{currentInv?.sugerido_gob?.toLocaleString() ?? "--"} {currentItem.unit}s</span>
                                 </div>
                                 <div className="flex justify-between">
                                   <span className="text-xs text-gray-500">Precio Proveedor</span>
                                   <span className="text-xs font-medium">${analysisData?.price.toFixed(2)} / {currentItem.unit}</span>
                                 </div>
                                 <div className="pt-2 border-t border-gray-200 flex justify-between">
-                                  <span className="text-xs font-bold">Total Inversión</span>
-                                  <span className="text-xs font-bold text-blue-600">${(200 * (analysisData?.price || 0)).toLocaleString()}</span>
+                                  <span className="text-xs font-bold">Total Inversión Estimada</span>
+                                  <span className="text-xs font-bold text-blue-600">${((currentInv?.sugerido_gob ?? 0) * (analysisData?.price || 0)).toLocaleString()}</span>
                                 </div>
                               </div>
                             </div>
