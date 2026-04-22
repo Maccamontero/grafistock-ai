@@ -189,7 +189,11 @@ function buildData() {
     if (!ventasMap[id]) {
       ventasMap[id] = {
         name,
-        category: row["CATEGORIA"]?.trim() ?? getCategory(id),
+        category: (() => {
+          const raw = row["CATEGORIA"]?.trim() ?? getCategory(id);
+          if (raw === "ANILLO DOBLE O" && name.toUpperCase().includes("ROLLO")) return "PLASTIFICACION";
+          return raw;
+        })(),
         months: [],
         latestInventory: 0,
         latestYearMonth: "",

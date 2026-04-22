@@ -96,6 +96,7 @@ export default function App() {
   const [selectedMasterProducts, setSelectedMasterProducts] = useState<string[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const searchRef = useRef<HTMLDivElement>(null);
 
   const fuse = useMemo(() => new Fuse(supplies, {
@@ -105,10 +106,15 @@ export default function App() {
     includeScore: true,
   }), [supplies]);
 
+  const categories = useMemo(() =>
+    [...new Set(supplies.map(s => s.category))].sort()
+  , [supplies]);
+
   const filteredSupplies = useMemo(() => {
-    if (!searchTerm.trim()) return supplies;
-    return fuse.search(searchTerm).map(r => r.item);
-  }, [searchTerm, fuse, supplies]);
+    let base = searchTerm.trim() ? fuse.search(searchTerm).map(r => r.item) : supplies;
+    if (selectedCategory) base = base.filter(s => s.category === selectedCategory);
+    return base;
+  }, [searchTerm, fuse, supplies, selectedCategory]);
 
   const suggestions = useMemo(() => {
     if (searchTerm.length < 4) return [];
@@ -405,6 +411,30 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                  {/* Category filter buttons */}
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => setSelectedCategory(null)}
+                      className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors whitespace-nowrap ${
+                        selectedCategory === null ? "bg-gray-800 text-white border-gray-800" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
+                      }`}
+                    >
+                      Todos
+                    </button>
+                    {categories.map(cat => (
+                      <button
+                        key={cat}
+                        onClick={() => setSelectedCategory(selectedCategory === cat ? null : cat)}
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors whitespace-nowrap ${
+                          selectedCategory === cat ? "bg-orange-600 text-white border-orange-600" : "bg-white text-gray-500 border-gray-200 hover:border-orange-400 hover:text-orange-600"
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="w-px h-6 bg-gray-200 shrink-0" />
+
                   {/* Horizontal pill list */}
                   <div className="flex-1 overflow-x-auto">
                     <div className="flex gap-1.5 pb-0.5" style={{ width: "max-content" }}>
@@ -477,9 +507,9 @@ export default function App() {
                             <CardContent className="pt-6">
                               <div className="flex items-center justify-between">
                                 <div>
-                                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">DOH (Cobertura)</p>
+                                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">DOH — Días de Cobertura</p>
                                   <h3 className="text-2xl font-bold">{dohStr} <span className="text-sm font-normal text-gray-400">días</span></h3>
-                                  <p className="text-[10px] text-gray-400 mt-1">Stock actual / demanda diaria</p>
+                                  <p className="text-[10px] text-gray-400 mt-1 leading-tight">Cuántos días aguanta el stock actual al ritmo de venta proyectado, sin recibir nuevo pedido.</p>
                                 </div>
                                 <div className="p-3 bg-orange-50 rounded-full">
                                   <Calendar className="w-6 h-6 text-orange-600" />
@@ -493,7 +523,12 @@ export default function App() {
                                 <div>
                                   <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Zona al Arribo</p>
                                   <h3 className={`text-2xl font-bold ${zonaText}`}>{zona ?? "--"}</h3>
-                                  <p className="text-[10px] text-gray-500 mt-1">INV_ARRIBO vs corredor</p>
+                                  <p className="text-[10px] text-gray-500 mt-1 leading-tight">
+                                    {zona === "PELIGRO" && "Cuando llegue el pedido, el stock restante no alcanza para cubrir la demanda mínima. Hay riesgo real de desabastecimiento."}
+                                    {zona === "CONFORT" && "Al momento del arribo habrá stock suficiente dentro del rango de seguridad. El SKU está bien cubierto."}
+                                    {zona === "OPORTUNIDAD" && "El stock que quedará al arribo supera el techo del corredor. Hay capital inmovilizado en exceso."}
+                                    {!zona && "Sin datos suficientes para proyectar."}
+                                  </p>
                                 </div>
                                 <div className={`p-3 rounded-full ${zona === "PELIGRO" ? "bg-red-100" : zona === "OPORTUNIDAD" ? "bg-yellow-100" : "bg-green-100"}`}>
                                   {zonaIcon}
@@ -523,8 +558,8 @@ export default function App() {
                       <Card className="border-gray-200 shadow-sm">
                         <CardHeader className="flex flex-row items-center justify-between">
                           <div>
-                            <CardTitle className="text-lg font-bold">Correlación Demanda vs. Inventario</CardTitle>
-                            <CardDescription>Análisis de cómo las ventas impactan el stock disponible</CardDescription>
+                            <CardTitle className="text-lg font-bold">{currentItem.name}</CardTitle>
+                            <CardDescription>Stock actual, en tránsito, pedidos nuevos y sugeridos vs. ventas proyectadas · SKU {currentItem.id}</CardDescription>
                           </div>
                           <div className="flex items-center gap-3">
                             <div className="flex gap-1">
@@ -694,14 +729,14 @@ export default function App() {
                                   strokeDasharray="4 2"
                                   fill="#FEF3C7"
                                   fillOpacity={0.85}
-                                  name="Banda de Proyección"
+                                  legendType="none"
                                   connectNulls={false}
                                 />
                                 <Line
                                   yAxisId="ventas"
                                   type="monotone"
                                   dataKey="forecastMid"
-                                  name="Demanda Proyectada"
+                                  legendType="none"
                                   stroke="#D97706"
                                   strokeWidth={2}
                                   strokeDasharray="6 3"
@@ -714,7 +749,7 @@ export default function App() {
                                   yAxisId="inventario"
                                   type="monotone"
                                   dataKey="stockForecast"
-                                  name="Stock Proyectado"
+                                  legendType="none"
                                   stroke="#3B82F6"
                                   strokeWidth={2}
                                   strokeDasharray="6 3"
@@ -734,176 +769,122 @@ export default function App() {
                         </CardContent>
                       </Card>
 
-                      {/* Corredor de Compra */}
+                      {/* Recomendación de Compra */}
                       {currentInv?.cover_p50 != null && (
                         <Card className="border-gray-200 shadow-sm">
                           <CardHeader className="pb-3">
                             <div className="flex items-center justify-between flex-wrap gap-2">
-                              <CardTitle className="text-sm font-bold flex items-center gap-2">
+                              <CardTitle className="text-base font-bold flex items-center gap-2">
                                 <Layers className="w-4 h-4 text-purple-600" />
-                                Corredor de Compra P50 / P75 / P90
+                                ¿Cuánto pedir?
                               </CardTitle>
                               <div className="flex items-center gap-2 flex-wrap">
-                                <span className="text-[10px] font-mono text-gray-500">RRE: {currentInv.runrate_estacional?.toLocaleString()}</span>
-                                <span className="text-[10px] font-mono text-gray-500">Ancho: {currentInv.ancho_corredor?.toFixed(1)}%</span>
+                                <span className="text-[10px] text-gray-400">Venta mensual proyectada: <span className="font-bold text-gray-600">{currentInv.runrate_estacional?.toLocaleString()} {currentItem.unit}s</span></span>
                                 {currentInv.revisar_precio && (
-                                  <span className="text-[10px] bg-yellow-100 text-yellow-800 font-bold px-2 py-0.5 rounded-full">⚠ Revisar Precio</span>
+                                  <span className="text-[10px] bg-yellow-100 text-yellow-800 font-bold px-2 py-0.5 rounded-full">⚠ Revisar precio de venta antes de reponer</span>
                                 )}
                               </div>
                             </div>
                           </CardHeader>
-                          <CardContent className="space-y-4">
-                            {/* Escenarios P50 / P75 / P90 */}
+                          <CardContent className="space-y-5">
+
+                            {/* Tres opciones de compra */}
                             <div className="grid grid-cols-3 gap-3">
-                              {(["P50","P75","P90"] as const).map(esc => {
+                              {([
+                                { esc: "P50", label: "Lo mínimo", desc: "Alcanza si las ventas se comportan igual que el promedio. Sin margen ante imprevistos.", color: "border-gray-300 bg-gray-50", textLabel: "text-gray-500", textVal: "text-gray-700" },
+                                { esc: "P75", label: "Lo recomendado", desc: "Incluye un colchón de seguridad para absorber variaciones normales del mercado.", color: "border-purple-400 bg-purple-50", textLabel: "text-purple-700", textVal: "text-purple-900" },
+                                { esc: "P90", label: "Con respaldo máximo", desc: "Protección ante un alza inesperada de ventas o retrasos en la próxima importación.", color: "border-blue-300 bg-blue-50", textLabel: "text-blue-600", textVal: "text-blue-900" },
+                              ] as const).map(({ esc, label, desc, color, textLabel, textVal }) => {
                                 const isDefault = currentInv.escenario_default === esc;
                                 const sug = esc === "P50" ? currentInv.sug_p50 : esc === "P75" ? currentInv.sug_p75 : currentInv.sug_p90;
-                                const cover = esc === "P50" ? currentInv.cover_p50 : esc === "P75" ? currentInv.cover_p75 : currentInv.cover_p90;
                                 return (
-                                  <div key={esc} className={`rounded-lg p-3 border ${isDefault ? "border-purple-400 bg-purple-50" : "border-gray-200 bg-gray-50"}`}>
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className={`text-xs font-bold ${isDefault ? "text-purple-700" : "text-gray-500"}`}>{esc}</span>
-                                      {isDefault && <span className="text-[9px] bg-purple-600 text-white font-bold px-1.5 py-0.5 rounded">DEFAULT</span>}
+                                  <div key={esc} className={`rounded-lg p-4 border ${color} ${isDefault ? "ring-2 ring-purple-400 ring-offset-1" : ""}`}>
+                                    <div className="flex items-center justify-between mb-2">
+                                      <span className={`text-xs font-bold uppercase tracking-wide ${textLabel}`}>{label}</span>
+                                      {isDefault && <span className="text-[9px] bg-purple-600 text-white font-bold px-1.5 py-0.5 rounded">SUGERIDO</span>}
                                     </div>
-                                    <p className={`text-lg font-black ${isDefault ? "text-purple-900" : "text-gray-700"}`}>{sug?.toLocaleString()}</p>
-                                    <p className="text-[10px] text-gray-400">cobertura: {cover?.toLocaleString()}</p>
+                                    <p className={`text-2xl font-black mb-1 ${textVal}`}>{sug?.toLocaleString()}</p>
+                                    <p className="text-[10px] text-gray-500 leading-tight">{desc}</p>
                                   </div>
                                 );
                               })}
                             </div>
 
-                            {/* Barra visual del corredor */}
+                            {/* Barra visual: stock que quedará al llegar el pedido */}
                             {(() => {
                               const p50 = currentInv.cover_p50 ?? 0;
                               const p90 = currentInv.cover_p90 ?? 1;
                               const arr = currentInv.inv_arribo ?? 0;
-                              const pctArr = Math.min(Math.max(arr / p90, 0), 1.2);
+                              const pctArr = Math.min(Math.max(arr / p90, 0), 1.15);
                               const arrPx = Math.round(pctArr * 100);
                               return (
-                                <div className="space-y-1">
-                                  <div className="flex justify-between text-[10px] text-gray-400">
-                                    <span>0</span><span>P50: {p50.toLocaleString()}</span><span>P90: {p90.toLocaleString()}</span>
+                                <div className="space-y-1.5">
+                                  <p className="text-xs font-semibold text-gray-500">Stock disponible cuando llegue el próximo pedido</p>
+                                  <div className="flex justify-between text-[10px] text-gray-400 px-0.5">
+                                    <span>Sin stock</span>
+                                    <span>Mínimo aceptable</span>
+                                    <span>Óptimo</span>
                                   </div>
                                   <div className="relative h-5 bg-gray-100 rounded-full overflow-hidden">
                                     <div className="absolute inset-0 bg-gradient-to-r from-red-200 via-green-200 to-yellow-200 rounded-full" />
                                     <div
-                                      className="absolute top-1 bottom-1 w-1.5 rounded-full bg-blue-600 shadow"
-                                      style={{ left: `${Math.min(arrPx, 95)}%` }}
-                                      title={`INV_ARRIBO: ${arr.toLocaleString()}`}
+                                      className="absolute top-1 bottom-1 w-2 rounded-full bg-blue-700 shadow"
+                                      style={{ left: `${Math.min(arrPx, 93)}%` }}
+                                      title={`Stock estimado al arribo: ${arr.toLocaleString()} ${currentItem.unit}s`}
                                     />
                                   </div>
                                   <p className="text-[10px] text-gray-500 text-center">
-                                    INV_ARRIBO: <span className="font-bold text-blue-700">{arr.toLocaleString()}</span>
-                                    {" "} · CONSUMO_LT: {((currentInv.stock ?? 0) - arr).toLocaleString()}
+                                    Stock estimado al llegar el pedido: <span className="font-bold text-blue-700">{arr.toLocaleString()} {currentItem.unit}s</span>
+                                    <span className="text-gray-400"> (se consumen aprox. {((currentInv.stock ?? 0) - arr).toLocaleString()} durante el tránsito)</span>
                                   </p>
                                 </div>
                               );
                             })()}
 
-                            {/* Resultado de gobernanza */}
-                            <div className={`flex items-center justify-between rounded-lg p-3 ${currentInv.entra_contenedor ? "bg-orange-50 border border-orange-200" : "bg-gray-50 border border-gray-200"}`}>
-                              <div>
-                                <p className="text-xs font-bold text-gray-600 uppercase tracking-wide">Sugerido post-gobernanza</p>
-                                <p className={`text-2xl font-black ${currentInv.entra_contenedor ? "text-orange-700" : "text-gray-400"}`}>
-                                  {currentInv.sugerido_gob?.toLocaleString()} <span className="text-sm font-normal">{currentItem.unit}s</span>
-                                </p>
-                              </div>
-                              <div className="text-right">
-                                <p className={`text-xs font-bold ${currentInv.entra_contenedor ? "text-orange-700" : "text-gray-400"}`}>
-                                  {currentInv.entra_contenedor ? "✓ ENTRA AL CONTENEDOR" : "— NO ENTRA ESTE CICLO"}
-                                </p>
-                                <p className="text-[10px] text-gray-400 mt-0.5">Escenario {currentInv.escenario_default}</p>
+                            {/* Decisión final */}
+                            <div className={`rounded-lg p-4 ${currentInv.entra_contenedor ? "bg-orange-50 border border-orange-200" : "bg-gray-50 border border-gray-200"}`}>
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">Pedido recomendado para este contenedor</p>
+                                  <p className={`text-3xl font-black ${currentInv.entra_contenedor ? "text-orange-700" : "text-gray-400"}`}>
+                                    {currentInv.sugerido_gob?.toLocaleString()} <span className="text-base font-normal">{currentItem.unit}s</span>
+                                  </p>
+                                </div>
+                                <div className="text-right">
+                                  <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${currentInv.entra_contenedor ? "bg-orange-600 text-white" : "bg-gray-200 text-gray-500"}`}>
+                                    {currentInv.entra_contenedor ? "✓ Incluir en el contenedor" : "No incluir en este ciclo"}
+                                  </span>
+                                </div>
                               </div>
                             </div>
+
+                            {/* Análisis AI integrado */}
+                            {currentForecast && (
+                              <div className="border-t border-gray-100 pt-4 space-y-3">
+                                <p className="text-xs font-bold text-gray-500 uppercase tracking-wide flex items-center gap-1.5">
+                                  <BrainCircuit className="w-3.5 h-3.5 text-orange-500" />
+                                  Por qué el modelo hace esta sugerencia
+                                </p>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                    <p className="text-[10px] font-bold text-gray-500 uppercase mb-1">¿Cambió algo en las ventas recientes?</p>
+                                    <p className="text-[11px] text-gray-700 leading-relaxed">{currentForecast.cambio_estructural}</p>
+                                  </div>
+                                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                    <p className="text-[10px] font-bold text-gray-500 uppercase mb-1">¿El alza reciente es real o pasajera?</p>
+                                    <p className="text-[11px] text-gray-700 leading-relaxed">{currentForecast.momentum_interpretacion}</p>
+                                  </div>
+                                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                    <p className="text-[10px] font-bold text-gray-500 uppercase mb-1">¿Hay algo más que considerar?</p>
+                                    <p className="text-[11px] text-gray-700 leading-relaxed">{currentForecast.observacion_cualitativa}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
                           </CardContent>
                         </Card>
                       )}
-
-                      {/* AI Insights Section */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {currentForecast && (
-                          <>
-                            <Card className="border-orange-200 bg-orange-50/30 shadow-sm md:col-span-2">
-                              <CardHeader className="pb-2">
-                                <CardTitle className="text-sm font-bold flex items-center gap-2 text-orange-800">
-                                  <BrainCircuit className="w-4 h-4" />
-                                  Análisis Interpretativo AI
-                                </CardTitle>
-                              </CardHeader>
-                              <CardContent className="space-y-4">
-                                <div className="space-y-1">
-                                  <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">1. Cambio estructural reciente</p>
-                                  <p className="text-[11px] text-gray-700 leading-relaxed bg-white rounded-lg border border-orange-100 p-2">
-                                    {currentForecast.cambio_estructural}
-                                  </p>
-                                </div>
-                                <div className="space-y-1">
-                                  <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">2. Interpretación de momentum</p>
-                                  <p className="text-[11px] text-gray-700 leading-relaxed bg-white rounded-lg border border-orange-100 p-2">
-                                    {currentForecast.momentum_interpretacion}
-                                  </p>
-                                </div>
-                                <div className="space-y-1">
-                                  <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">3. Observación cualitativa</p>
-                                  <p className="text-[11px] text-gray-700 leading-relaxed bg-white rounded-lg border border-orange-100 p-2">
-                                    {currentForecast.observacion_cualitativa}
-                                  </p>
-                                </div>
-                              </CardContent>
-                            </Card>
-
-                            <Card className="border-blue-200 bg-blue-50/30 shadow-sm">
-                              <CardHeader className="pb-2">
-                                <CardTitle className="text-sm font-bold flex items-center gap-2 text-blue-800">
-                                  <Ship className="w-4 h-4" />
-                                  Planificación de Cobertura
-                                </CardTitle>
-                              </CardHeader>
-                              <CardContent className="space-y-4">
-                                <div className="space-y-1">
-                                  <div className="flex justify-between text-sm">
-                                    <span className="text-blue-800 font-semibold">Lead Time (Meses)</span>
-                                    <span className="font-bold text-blue-900">{currentStats?.leadTimeMonths}</span>
-                                  </div>
-                                  <p className="text-[10px] text-blue-600/70 leading-tight">
-                                    Tiempo que tarda el proveedor en entregar desde que se confirma la orden.
-                                  </p>
-                                </div>
-
-                                <div className="space-y-1">
-                                  <div className="flex justify-between text-sm">
-                                    <span className="text-blue-800 font-semibold">Demanda en Lead Time</span>
-                                    <span className="font-bold text-blue-900">{currentStats?.demandDuringLeadTime}</span>
-                                  </div>
-                                  <p className="text-[10px] text-blue-600/70 leading-tight">
-                                    Unidades que se estima vender mientras esperas que llegue el pedido.
-                                  </p>
-                                </div>
-
-                                <div className="space-y-1">
-                                  <div className="flex justify-between text-sm">
-                                    <span className="text-blue-800 font-semibold">Buffer (Stock de Seguridad)</span>
-                                    <span className="font-bold text-blue-900">{currentStats?.buffer}</span>
-                                  </div>
-                                  <p className="text-[10px] text-blue-600/70 leading-tight">
-                                    Colchón extra para cubrir variaciones inesperadas o picos de venta (P75).
-                                  </p>
-                                </div>
-
-                                <div className="pt-3 border-t border-blue-200">
-                                  <div className="flex justify-between items-center">
-                                    <span className="text-xs font-bold text-blue-900">COBERTURA OBJETIVO</span>
-                                    <span className="text-xl font-black text-blue-900">{currentStats?.targetCoverage}</span>
-                                  </div>
-                                  <p className="text-[10px] font-medium text-blue-800 mt-1">
-                                    Nivel de stock mínimo para no quebrar mientras llega el nuevo pedido.
-                                  </p>
-                                </div>
-                              </CardContent>
-                            </Card>
-                          </>
-                        )}
-                      </div>
 
                       {/* Product Analysis Dialog */}
                       <Dialog open={isAnalysisOpen} onOpenChange={setIsAnalysisOpen}>
