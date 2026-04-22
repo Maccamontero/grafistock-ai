@@ -664,6 +664,7 @@ function buildData() {
   const allRatioFallback = allSeasonVals.length > 1
     ? Math.max(...allSeasonVals) / Math.min(...allSeasonVals) : 1;
 
+  const cvNormMap: Record<string, number> = {};
   const tipoDemandaMap: Record<string, "CONTINUA" | "INTERMITENTE" | "POR_PROYECTO"> = {};
 
   for (const [id, v] of Object.entries(ventasMap)) {
@@ -694,6 +695,7 @@ function buildData() {
       tipo = "INTERMITENTE";
     }
 
+    cvNormMap[id] = cvNorm;
     tipoDemandaMap[id] = tipo;
   }
 
@@ -908,6 +910,140 @@ function buildData() {
   }
 
 
+  // ── 2.9c. Corredor P50/P75/P90 anclado en RUNRATE_ESTACIONAL ────────────
+  interface CorredorData {
+    cvCap: number;
+    fP50: number; fP75: number; fP90: number;
+    cobMeses: number;
+    coverP50: number; coverP75: number; coverP90: number;
+    invActual: number; consumoLT: number; invArribo: number;
+    sugP50: number; sugP75: number; sugP90: number;
+    escenarioDefault: string; sugeridoFinal: number;
+    anchoCorredor: number;
+  }
+  const corredorMap: Record<string, CorredorData> = {};
+
+  for (const [id, v] of Object.entries(ventasMap)) {
+    const rre  = skuRRE[id]; if (!rre) continue;
+    const tipo = tipoDemandaMap[id] ?? "CONTINUA";
+
+    // CV_CAP: techo en 1.0 para evitar corredores absurdos en SKUs extremos
+    const cvNorm = cvNormMap[id] ?? 0;
+    const cvCap  = Math.min(cvNorm, 1.0);
+
+    // Factores z-score normal estándar
+    const fP50 = 1.0;
+    const fP75 = 1 + 0.674 * cvCap;
+    const fP90 = 1 + 1.282 * cvCap;
+
+    // Cobertura objetivo en meses por tipo de demanda
+    const cobMeses = tipo === "CONTINUA" ? 7 : tipo === "INTERMITENTE" ? 6 : 4;
+    const rreVal   = rre.runrateEstacional;
+
+    const coverP50 = Math.round(rreVal * cobMeses * fP50);
+    const coverP75 = Math.round(rreVal * cobMeses * fP75);
+    const coverP90 = Math.round(rreVal * cobMeses * fP90);
+
+    // Inventario estimado al momento de arribo
+    const lts     = leadTimesMap[id] ?? [];
+    const ltReal  = lts.length ? Math.round(lts.reduce((a,b)=>a+b,0)/lts.length) : 60;
+    const consumoLT = rreVal * (ltReal / 30);
+    const invArribo = Math.max(v.latestInventory - consumoLT, 0);
+
+    // Sugeridos netos de cobertura en arribo (enteros)
+    const sugP50 = Math.max(Math.round(coverP50 - invArribo), 0);
+    const sugP75 = Math.max(Math.round(coverP75 - invArribo), 0);
+    const sugP90 = Math.max(Math.round(coverP90 - invArribo), 0);
+
+    // Escenario default por tipo
+    const escenarioDefault = tipo === "POR_PROYECTO" ? "P50" : "P75";
+    const sugeridoFinal    = escenarioDefault === "P50" ? sugP50 : sugP75;
+
+    // Ancho corredor: indicador de volatilidad / incertidumbre
+    const anchoCorredor = (fP90 - fP50) * 100;
+
+    corredorMap[id] = {
+      cvCap:             Number(cvCap.toFixed(3)),
+      fP50, fP75:        Number(fP75.toFixed(4)), fP90: Number(fP90.toFixed(4)),
+      cobMeses,
+      coverP50, coverP75, coverP90,
+      invActual: v.latestInventory,
+      consumoLT: Number(consumoLT.toFixed(1)),
+      invArribo: Number(invArribo.toFixed(1)),
+      sugP50, sugP75, sugP90,
+      escenarioDefault, sugeridoFinal,
+      anchoCorredor: Number(anchoCorredor.toFixed(1)),
+    };
+  }
+
+  // Diagnóstico — 4 SKUs testigo
+  console.log("══ CORREDOR P50/P75/P90 — VALIDACIÓN ══════════════════════");
+  for (const id of ["131010","113005","112017","121023"]) {
+    const c = corredorMap[id]; const v2 = ventasMap[id]; const rre = skuRRE[id];
+    if (!c || !v2 || !rre) continue;
+    const lts = leadTimesMap[id] ?? [];
+    const ltR = lts.length ? Math.round(lts.reduce((a,b)=>a+b,0)/lts.length) : 60;
+    console.log(`\n── SKU ${id} — ${v2.name.substring(0, 36)}`);
+    console.log(`   Tipo: ${(tipoDemandaMap[id]??'').padEnd(14)} LT_REAL: ${ltR} días`);
+    console.log(`   RRE: ${rre.runrateEstacional.toFixed(1).padStart(8)}  CV_NORM: ${(cvNormMap[id]??0).toFixed(3)}  CV_CAP: ${c.cvCap.toFixed(3)}`);
+    console.log(`   F_P50: ${c.fP50.toFixed(3)}  F_P75: ${c.fP75.toFixed(3)}  F_P90: ${c.fP90.toFixed(3)}  COB_MESES: ${c.cobMeses}`);
+    console.log(`   COVER:    P50=${String(c.coverP50).padStart(6)}  P75=${String(c.coverP75).padStart(6)}  P90=${String(c.coverP90).padStart(6)}`);
+    console.log(`   INV_ACT: ${String(c.invActual).padStart(6)}  CONSUMO_LT: ${String(c.consumoLT).padStart(7)}  INV_ARRIBO: ${String(c.invArribo).padStart(7)}`);
+    console.log(`   SUG:      P50=${String(c.sugP50).padStart(6)}  P75=${String(c.sugP75).padStart(6)}  P90=${String(c.sugP90).padStart(6)}`);
+    console.log(`   DEFAULT: ${c.escenarioDefault}  →  SUGERIDO_FINAL: ${c.sugeridoFinal}  |  ANCHO: ${c.anchoCorredor}%`);
+  }
+
+  // Diagnóstico — resumen portafolio
+  const allC = Object.values(corredorMap);
+  const sumSugP50 = allC.reduce((s,c)=>s+c.sugP50, 0);
+  const sumSugP75 = allC.reduce((s,c)=>s+c.sugP75, 0);
+  const sumSugP90 = allC.reduce((s,c)=>s+c.sugP90, 0);
+  const sumFinal  = allC.reduce((s,c)=>s+c.sugeridoFinal, 0);
+  const anchoEst  = allC.filter(c=>c.anchoCorredor < 50).length;
+  const anchoMed  = allC.filter(c=>c.anchoCorredor >= 50 && c.anchoCorredor <= 80).length;
+  const anchoAlt  = allC.filter(c=>c.anchoCorredor > 80).length;
+  console.log("\n── Portafolio — Corredor Agregado ──────────────────────────");
+  console.log(`   Suma SUG_P50:                  ${sumSugP50.toLocaleString()}`);
+  console.log(`   Suma SUG_P75:                  ${sumSugP75.toLocaleString()}`);
+  console.log(`   Suma SUG_P90:                  ${sumSugP90.toLocaleString()}`);
+  console.log(`   Suma SUGERIDO_FINAL (default): ${sumFinal.toLocaleString()}`);
+  console.log(`\n   Distribución ANCHO_CORREDOR:`);
+  console.log(`     <50%   estable:              ${anchoEst} SKUs`);
+  console.log(`     50-80% volatilidad media:    ${anchoMed} SKUs`);
+  console.log(`     >80%   alta incertidumbre:   ${anchoAlt} SKUs`);
+  console.log("──────────────────────────────────────────");
+
+  // ── Validación 1: Ancho promedio por tipo en SKUs con ancho > 80% ──
+  const tiposPosibles = ["CONTINUA","INTERMITENTE","POR_PROYECTO"] as const;
+  console.log("\n── Validación 1: ANCHO promedio por tipo (SKUs ancho >80%) ──");
+  for (const t of tiposPosibles) {
+    const grupo = Object.entries(corredorMap)
+      .filter(([id, c]) => (tipoDemandaMap[id] ?? "CONTINUA") === t && c.anchoCorredor > 80);
+    const prom = grupo.length ? grupo.reduce((s,[,c])=>s+c.anchoCorredor,0)/grupo.length : 0;
+    console.log(`   ${t.padEnd(15)} ${grupo.length} SKUs  |  Ancho prom: ${prom.toFixed(1)}%`);
+  }
+
+  // ── Validación 2: SKUs en "modo reposo" (SUGERIDO_FINAL < 10) por tipo ──
+  console.log("\n── Validación 2: SKUs en modo reposo (SUGERIDO_FINAL < 10) ──");
+  for (const t of tiposPosibles) {
+    const grupo = Object.entries(corredorMap)
+      .filter(([id, c]) => (tipoDemandaMap[id] ?? "CONTINUA") === t && c.sugeridoFinal < 10);
+    console.log(`   ${t.padEnd(15)} ${grupo.length} SKUs`);
+  }
+
+  // ── Validación 3: Top 10 SKUs por SUGERIDO_FINAL ──
+  console.log("\n── Validación 3: Top 10 SKUs por SUGERIDO_FINAL ──");
+  const top10 = Object.entries(corredorMap)
+    .sort((a,b) => b[1].sugeridoFinal - a[1].sugeridoFinal)
+    .slice(0, 10);
+  console.log("   Código       Tipo           Inv.Act  Sug.Final  Escenario  Nombre");
+  for (const [id, c] of top10) {
+    const tipo = tipoDemandaMap[id] ?? "CONTINUA";
+    const nombre = (ventasMap[id]?.name ?? "").substring(0, 30);
+    console.log(`   ${id.padEnd(12)} ${tipo.padEnd(15)} ${String(c.invActual).padStart(7)}  ${String(c.sugeridoFinal).padStart(9)}  ${c.escenarioDefault.padEnd(9)}  ${nombre}`);
+  }
+  console.log("──────────────────────────────────────────");
+
   // ── 3. Build supplies list ──
   const supplies = Object.entries(ventasMap).map(([id, v]) => {
     const lts = leadTimesMap[id] ?? [];
@@ -965,6 +1101,18 @@ function buildData() {
       factor_estacional:  rre ? Number(rre.factorEstacional.toFixed(3))  : 1,
       projected_month:    rre?.projectedMonth ?? 1,
       tipo_demanda:       tipoDemandaMap[id] ?? "CONTINUA",
+      // Corredor P50/P75/P90
+      cv_cap:             Number((Math.min(cvNormMap[id] ?? 0, 1.0)).toFixed(3)),
+      cover_p50:          corredorMap[id]?.coverP50  ?? 0,
+      cover_p75:          corredorMap[id]?.coverP75  ?? 0,
+      cover_p90:          corredorMap[id]?.coverP90  ?? 0,
+      sug_p50:            corredorMap[id]?.sugP50    ?? 0,
+      sug_p75:            corredorMap[id]?.sugP75    ?? 0,
+      sug_p90:            corredorMap[id]?.sugP90    ?? 0,
+      inv_arribo:         corredorMap[id]?.invArribo ?? 0,
+      sugerido_final:     corredorMap[id]?.sugeridoFinal ?? 0,
+      escenario_default:  corredorMap[id]?.escenarioDefault ?? "P75",
+      ancho_corredor:     corredorMap[id]?.anchoCorredor ?? 0,
     };
   });
 
