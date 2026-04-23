@@ -115,6 +115,93 @@ function loadVentas(): VentasRow[] {
   return readCSV(filePath) as VentasRow[];
 }
 
+// --- Weekly inventory CSV parser ---
+interface WeeklyEntry { stockoutWeeks: number; totalWeeks: number; }
+interface WeeklyResult {
+  weeklyData: Record<string, Record<string, WeeklyEntry>>;
+  allWeeklySkus: Set<string>;
+}
+
+function loadWeeklyInventory(): WeeklyResult {
+  const MONTH_NAMES: Record<string, number> = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "octubre": 10,
+    "noviembre": 11, "novimbre": 11, "diciembre": 12,
+  };
+  const weeklyData: Record<string, Record<string, WeeklyEntry>> = {};
+  const allWeeklySkus = new Set<string>();
+
+  const files = [
+    { name: "inventario_semanal_2024.csv", year: 2024 },
+    { name: "inventario_semanal_2025.csv", year: 2025 },
+    { name: "inventario_semanal_2026.csv", year: 2026 },
+  ];
+
+  for (const { name, year } of files) {
+    const fullPath = path.join(__dirname, "public", "data", name);
+    if (!fs.existsSync(fullPath)) { console.warn(`  [semanal] No encontrado: ${name}`); continue; }
+
+    const raw = fs.readFileSync(fullPath, "utf-8").replace(/^\uFEFF/, "");
+    const parsed = Papa.parse(raw, { header: false, skipEmptyLines: false });
+    const rows = parsed.data as string[][];
+    if (rows.length < 3) continue;
+
+    const monthRow = rows[0];
+    const dayRow   = rows[1];
+
+    // Build column metadata: propagate month name forward, extract day number
+    const colMeta: Array<{ month: number; day: number } | null> = [];
+    let currentMonth = 0;
+
+    for (let c = 2; c < dayRow.length; c++) {
+      const monthCell = (monthRow[c] ?? "").trim();
+      if (monthCell !== "") {
+        const lower = monthCell.toLowerCase();
+        if (MONTH_NAMES[lower] !== undefined) {
+          currentMonth = MONTH_NAMES[lower];
+        } else {
+          // Handle date format like "2026-05-01 00:00:00"
+          const dm = lower.match(/^\d{4}-(\d{2})-/);
+          if (dm) currentMonth = parseInt(dm[1], 10);
+        }
+      }
+      const day = parseFloat((dayRow[c] ?? "").trim());
+      colMeta.push(currentMonth > 0 && !isNaN(day) && day > 0
+        ? { month: currentMonth, day: Math.round(day) }
+        : null);
+    }
+
+    // Parse data rows (skip row 1 header)
+    for (let r = 2; r < rows.length; r++) {
+      const row = rows[r];
+      const id  = (row[0] ?? "").trim();
+      if (!id || !/^\d+/.test(id)) continue;   // skip empty / header artifacts
+
+      allWeeklySkus.add(id);
+
+      for (let c = 2; c < row.length; c++) {
+        const meta   = colMeta[c - 2];
+        if (!meta) continue;
+
+        const invStr = (row[c] ?? "").trim();
+        if (invStr === "" || invStr === "-") continue; // no data yet for this week
+
+        const inv = parseFloat(invStr);
+        if (isNaN(inv)) continue;
+
+        const ym = `${year}-${String(meta.month).padStart(2, "0")}`;
+        if (!weeklyData[id])      weeklyData[id] = {};
+        if (!weeklyData[id][ym])  weeklyData[id][ym] = { stockoutWeeks: 0, totalWeeks: 0 };
+
+        weeklyData[id][ym].totalWeeks++;
+        if (inv === 0) weeklyData[id][ym].stockoutWeeks++;
+      }
+    }
+  }
+
+  return { weeklyData, allWeeklySkus };
+}
+
 // --- Build API data from real CSVs ---
 function buildData() {
   const importRows = loadImportaciones();
@@ -170,7 +257,7 @@ function buildData() {
   const ventasMap: Record<string, {
     name: string;
     category: string;
-    months: { yearMonth: string; year: number; month: number; qty: number; inv: number; estado?: string; demanda_adj?: number; fuente_adj?: string }[];
+    months: { yearMonth: string; year: number; month: number; qty: number; inv: number; estado?: string; demanda_adj?: number; fuente_adj?: string; pct_dias_stockout?: number }[];
     latestInventory: number;
     latestYearMonth: string;
   }> = {};
@@ -212,7 +299,7 @@ function buildData() {
 
   // ── 2.5. Clasificar cada mes por SKU → columna ESTADO ──
   const estadoCounts: Record<string, number> = {
-    NORMAL: 0, QUIEBRE: 0, QUIEBRE_PROBABLE: 0, QUIEBRE_ARRASTRE: 0, SIN_DEMANDA: 0,
+    NORMAL: 0, QUIEBRE: 0, QUIEBRE_PARCIAL: 0, QUIEBRE_PROBABLE: 0, QUIEBRE_ARRASTRE: 0, SIN_DEMANDA: 0,
   };
 
   for (const v of Object.values(ventasMap)) {
@@ -269,10 +356,49 @@ function buildData() {
     console.log("──────────────────────────────────────────");
   }
 
+  // ── 2.5b. Enriquecimiento con inventario semanal → QUIEBRE_PARCIAL ──────────
+  const { weeklyData, allWeeklySkus } = loadWeeklyInventory();
+
+  for (const [id, v] of Object.entries(ventasMap)) {
+    for (const m of v.months) {
+      const entry = weeklyData[id]?.[m.yearMonth];
+      const pct = (entry && entry.totalWeeks > 0) ? entry.stockoutWeeks / entry.totalWeeks : 0;
+      m.pct_dias_stockout = pct;
+
+      // NORMAL con más del 50% de semanas en stockout → QUIEBRE_PARCIAL
+      if (m.estado === "NORMAL" && pct > 0.5) {
+        estadoCounts["NORMAL"]--;
+        estadoCounts["QUIEBRE_PARCIAL"]++;
+        m.estado = "QUIEBRE_PARCIAL";
+      }
+    }
+  }
+
+  console.log("── ESTADO (post enriquecimiento semanal) ─────────────────");
+  const estadoOrder = ["NORMAL","QUIEBRE","QUIEBRE_PARCIAL","QUIEBRE_PROBABLE","QUIEBRE_ARRASTRE","SIN_DEMANDA"];
+  for (const e of estadoOrder) {
+    console.log(`  ${e.padEnd(22)} ${String(estadoCounts[e] ?? 0).padStart(5)} registros`);
+  }
+  const totalPost = Object.values(estadoCounts).reduce((a, b) => a + b, 0);
+  console.log(`  ${"TOTAL".padEnd(22)} ${totalPost.toString().padStart(5)} registros`);
+  console.log("──────────────────────────────────────────");
+
+  // Validación 6: cobertura de SKUs entre archivos semanales y maestro
+  const skusEnMaestro = new Set(Object.keys(ventasMap));
+  const soloEnSemanal = [...allWeeklySkus].filter(id => !skusEnMaestro.has(id));
+  const soloEnMaestro = [...skusEnMaestro].filter(id => !allWeeklySkus.has(id));
+  console.log("── Cobertura SKUs (semanal vs maestro) ───────────────────");
+  console.log(`  En semanales pero NO en maestro: ${soloEnSemanal.length} SKUs (ignorados)`);
+  console.log(`  En maestro pero NO en semanales: ${soloEnMaestro.length} SKUs (sin enriquecimiento)`);
+  if (soloEnSemanal.length > 0 && soloEnSemanal.length <= 15) {
+    console.log(`  SKUs solo en semanal: ${soloEnSemanal.join(", ")}`);
+  }
+  console.log("──────────────────────────────────────────");
+
   // ── 2.6. Calcular DEMANDA_ADJ con cascada de fallbacks ────────────────────
   const QUIEBRE_ESTADOS = new Set(["QUIEBRE", "QUIEBRE_PROBABLE", "QUIEBRE_ARRASTRE"]);
   const fuenteCounts: Record<string, number> = {
-    ORIGINAL: 0, SIN_DEMANDA: 0,
+    ORIGINAL: 0, SIN_DEMANDA: 0, AJUSTE_PROPORCIONAL: 0,
     IMPUTADO_PREVIO: 0, IMPUTADO_POSTERIOR: 0, IMPUTADO_GLOBAL: 0, SIN_BASE: 0,
   };
   let sumOriginal = 0;
@@ -297,11 +423,8 @@ function buildData() {
       const estado = m.estado ?? "NORMAL";
       sumOriginal += m.qty;
 
-      if (!QUIEBRE_ESTADOS.has(estado)) {
-        m.demanda_adj = m.qty;
-        m.fuente_adj = estado === "NORMAL" ? "ORIGINAL" : "SIN_DEMANDA";
-        if (estado === "NORMAL") normalWindow.push(m.qty);
-      } else {
+      if (QUIEBRE_ESTADOS.has(estado)) {
+        // QUIEBRE, QUIEBRE_PROBABLE, QUIEBRE_ARRASTRE: reemplazo completo por promedio móvil
         if (normalWindow.length > 0) {
           // Fallback 0: promedio de hasta 3 NORMAL previos
           const window = normalWindow.slice(-3);
@@ -327,6 +450,32 @@ function buildData() {
             m.fuente_adj = "SIN_BASE";
           }
         }
+      } else if (estado === "QUIEBRE_PARCIAL") {
+        // Ajuste proporcional: recupera (pct_dias_stockout × diferencia con promedio móvil)
+        // DEMANDA_ADJ = ventas + (movAvg − ventas) × pct_dias_stockout
+        const pct = m.pct_dias_stockout ?? 0;
+        let movAvg: number;
+        if (normalWindow.length > 0) {
+          const win = normalWindow.slice(-3);
+          movAvg = Math.round(win.reduce((a, b) => a + b, 0) / win.length);
+        } else {
+          const posterior = allNormalByIndex.filter(n => n.idx > i).slice(0, 3).map(n => n.qty);
+          if (posterior.length >= 3) {
+            movAvg = Math.round(posterior.reduce((a, b) => a + b, 0) / posterior.length);
+          } else if (globalNormalAvg !== null) {
+            movAvg = globalNormalAvg;
+          } else {
+            movAvg = m.qty; // sin contexto: sin ajuste
+          }
+        }
+        m.demanda_adj = Math.round(m.qty + (movAvg - m.qty) * pct);
+        m.fuente_adj = "AJUSTE_PROPORCIONAL";
+        // No agregar a normalWindow: mes contaminado por stockout intra-mes
+      } else {
+        // NORMAL o SIN_DEMANDA: valor original
+        m.demanda_adj = m.qty;
+        m.fuente_adj = estado === "NORMAL" ? "ORIGINAL" : "SIN_DEMANDA";
+        if (estado === "NORMAL") normalWindow.push(m.qty);
       }
 
       sumAdjusted += m.demanda_adj!;
@@ -1250,6 +1399,83 @@ function buildData() {
   console.log(`Loaded ${supplies.length} products | ${history.length} monthly sales records`);
   const withLeadTime = supplies.filter((s) => (leadTimesMap[s.id]?.length ?? 0) > 0).length;
   console.log(`Lead times from importaciones: ${withLeadTime} products`);
+
+  // ══ VALIDACIÓN INVENTARIO SEMANAL ══════════════════════════════════════════
+  console.log("\n══ VALIDACIÓN INVENTARIO SEMANAL ════════════════════════════");
+
+  // Validación 1 — ESTADO actualizado (ya impreso en 2.5b arriba)
+  // Validación 2 — FUENTE_ADJ actualizado (ya impreso en 2.6 arriba)
+
+  // Validación 3 — Comparativo demanda total
+  console.log("\n── Validación 3: Demanda recuperada total ───────────────────");
+  console.log(`   DEMANDA_ADJ antes del cambio (baseline):  252,251 unidades`);
+  console.log(`   DEMANDA_ADJ después del cambio:           ${sumAdjusted.toLocaleString()} unidades`);
+  const deltaTotal = sumAdjusted - 252251;
+  console.log(`   Δ por ajuste proporcional semanal:        ${deltaTotal >= 0 ? "+" : ""}${deltaTotal.toLocaleString()} unidades`);
+  const mesesAP = Object.values(ventasMap)
+    .flatMap(v => v.months)
+    .filter(m => m.fuente_adj === "AJUSTE_PROPORCIONAL").length;
+  console.log(`   Meses con AJUSTE_PROPORCIONAL:             ${mesesAP}`);
+
+  // Validación 4 — RUNRATE_ESTACIONAL testigo: antes vs después
+  console.log("\n── Validación 4: RUNRATE_ESTACIONAL testigo — antes vs después");
+  const testigos4 = ["113005", "121023", "112017", "131010"];
+  const tipoMeta4: Record<string, [number, number]> = {
+    CONTINUA: [0.7, 0.3], INTERMITENTE: [0.4, 0.6], POR_PROYECTO: [0.2, 0.8],
+  };
+  console.log("   SKU       TIPO          RRE_ANTES  RRE_DESPUES      Δ   Meses_AP  NOMBRE");
+  for (const id of testigos4) {
+    const v   = ventasMap[id];
+    const rre = skuRRE[id];
+    if (!v || !rre) continue;
+    const tipo = tipoDemandaMap[id] ?? "CONTINUA";
+    const [w3, wH] = tipoMeta4[tipo] ?? [0.7, 0.3];
+    // RRE "antes": usa qty en lugar de demanda_adj para meses QUIEBRE_PARCIAL
+    const demBefore = v.months.map(m =>
+      m.fuente_adj === "AJUSTE_PROPORCIONAL" ? m.qty : (m.demanda_adj ?? m.qty));
+    const histBefore = demBefore.reduce((a, b) => a + b, 0) / (demBefore.length || 1);
+    const l3Before   = demBefore.slice(-3).reduce((a, b) => a + b, 0) / 3;
+    const rradjBefore = w3 * l3Before + wH * histBefore;
+    const rreBefore   = rradjBefore * rre.factorEstacional;
+    const delta4      = rre.runrateEstacional - rreBefore;
+    const ap4         = v.months.filter(m => m.fuente_adj === "AJUSTE_PROPORCIONAL").length;
+    console.log(
+      `   ${id.padEnd(9)} ${tipo.padEnd(13)} ` +
+      `${rreBefore.toFixed(1).padStart(9)}  ${rre.runrateEstacional.toFixed(1).padStart(11)}  ` +
+      `${(delta4 >= 0 ? "+" : "") + delta4.toFixed(1).padStart(5)}  ` +
+      `${String(ap4).padStart(8)}  ${v.name.substring(0, 26)}`
+    );
+  }
+
+  // Validación 5 — Top 10 SKUs con mayor aumento en DEMANDA_ADJ total
+  console.log("\n── Validación 5: Top 10 mayor aumento DEMANDA_ADJ (AJUSTE_PROPORCIONAL) ─");
+  const deltaDemanda: Array<{ id: string; name: string; delta: number; meses: number; pctProm: number }> = [];
+  for (const [id, v] of Object.entries(ventasMap)) {
+    let delta = 0; let meses = 0; let sumPct = 0;
+    for (const m of v.months) {
+      if (m.fuente_adj === "AJUSTE_PROPORCIONAL") {
+        delta += (m.demanda_adj ?? m.qty) - m.qty;
+        meses++;
+        sumPct += m.pct_dias_stockout ?? 0;
+      }
+    }
+    if (meses > 0) {
+      deltaDemanda.push({ id, name: v.name, delta: Math.round(delta), meses, pctProm: sumPct / meses });
+    }
+  }
+  deltaDemanda.sort((a, b) => b.delta - a.delta);
+  console.log("   SKU       ΔDEMANDA  MESES  PCT_PROM  NOMBRE");
+  for (const d of deltaDemanda.slice(0, 10)) {
+    console.log(
+      `   ${d.id.padEnd(9)} ` +
+      `${("+" + d.delta).padStart(8)}  ` +
+      `${String(d.meses).padStart(5)}  ` +
+      `${(d.pctProm * 100).toFixed(0).padStart(6)}%   ` +
+      `${d.name.substring(0, 32)}`
+    );
+  }
+  console.log(`   (${deltaDemanda.length} SKUs en total con al menos 1 mes AJUSTE_PROPORCIONAL)`);
+  console.log("══════════════════════════════════════════════════════════");
 
   return { supplies, history, inventory };
 }
