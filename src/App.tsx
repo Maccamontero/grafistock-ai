@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { analyzeDemand, AnalysisResult } from "@/src/lib/gemini";
+import Performance from "@/src/Performance";
 import { calculateInventoryMetrics, InventoryStats } from "@/src/lib/inventoryStats";
 import { cleanSupplyChainData, MasterRecord } from "@/src/lib/dataCleaning";
 import { masterProducts, MasterProduct } from "@/src/data/masterProducts";
@@ -392,6 +393,10 @@ export default function App() {
               <TabsTrigger value="cleaning" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
                 <Database className="w-4 h-4 mr-2" />
                 Limpieza de Datos (Master)
+              </TabsTrigger>
+              <TabsTrigger value="performance" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                <TrendingUp className="w-4 h-4 mr-2" />
+                Performance del Modelo
               </TabsTrigger>
             </TabsList>
           </div>
@@ -1271,6 +1276,10 @@ export default function App() {
                 )}
               </div>
             </div>
+          </TabsContent>
+
+          <TabsContent value="performance">
+            <Performance />
           </TabsContent>
 
         </Tabs>

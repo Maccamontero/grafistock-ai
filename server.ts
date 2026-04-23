@@ -1487,6 +1487,281 @@ function buildData() {
   return { supplies, history, inventory, weeklyRaw };
 }
 
+// --- Performance backtesting (pipeline congelado en 2024-12) ---
+function buildPerformanceReport() {
+  const CUTOFF = "2024-12";
+
+  const importRows  = loadImportaciones();
+  const ventasRows  = loadVentas();
+  const { weeklyData } = loadWeeklyInventory();
+
+  // Lead times (sin filtro de fecha)
+  const leadTimesMap: Record<string, number[]> = {};
+  for (const row of importRows) {
+    const id = row.CODIGO?.trim();
+    const ordered = parseDate(row["FECHA ORDEN DE COMPRA"]);
+    const arrived = parseDate(row["FECHA DE LLEGADA"]);
+    if (id && ordered && arrived) {
+      const lt = diffDays(ordered, arrived);
+      if (lt > 0 && lt < 500) { if (!leadTimesMap[id]) leadTimesMap[id] = []; leadTimesMap[id].push(lt); }
+    }
+  }
+
+  // ── Pipeline congelado: solo datos ≤ 2024-12 ────────────────────────────
+  const trainingRows = ventasRows.filter(r => {
+    const yr = parseInt(r["AÑO"], 10); const mo = parseInt(r["MES NUMERO"], 10);
+    return !isNaN(yr) && !isNaN(mo) && `${yr}-${String(mo).padStart(2,"0")}` <= CUTOFF;
+  });
+
+  type FMonth = { yearMonth:string; year:number; month:number; qty:number; inv:number; estado?:string; demanda_adj?:number; fuente_adj?:string };
+  type FEntry = { name:string; category:string; months:FMonth[]; latestInventory:number; latestYearMonth:string };
+  const vm: Record<string, FEntry> = {};
+
+  for (const row of trainingRows) {
+    const id = row["COD. PRODUCTO"]?.trim(); const name = row["DESCRIPCION"]?.trim();
+    const yr = parseInt(row["AÑO"],10); const mo = parseInt(row["MES NUMERO"],10);
+    if (!id || !name || isNaN(yr) || isNaN(mo)) continue;
+    const qty = parseQty(row["UNIDADES VENDIDAS"]);
+    const inv = parseInventory(row["INVENTARIO FINAL"]);
+    const ym = `${yr}-${String(mo).padStart(2,"0")}`;
+    if (!vm[id]) {
+      const raw = row["CATEGORIA"]?.trim() ?? getCategory(id);
+      vm[id] = { name, category: (raw === "ANILLO DOBLE O" && name.toUpperCase().includes("ROLLO")) ? "PLASTIFICACION" : raw, months:[], latestInventory:0, latestYearMonth:"" };
+    }
+    vm[id].months.push({ yearMonth:ym, year:yr, month:mo, qty, inv });
+    if (ym > vm[id].latestYearMonth) { vm[id].latestYearMonth = ym; vm[id].latestInventory = inv; }
+  }
+
+  // ESTADO
+  for (const v of Object.values(vm)) {
+    v.months.sort((a,b) => a.yearMonth.localeCompare(b.yearMonth));
+    const avgH = v.months.reduce((s,m) => s+m.qty,0) / (v.months.length||1);
+    for (let i = 0; i < v.months.length; i++) {
+      const m = v.months[i]; const invIni = i>0 ? v.months[i-1].inv : null;
+      if (m.qty===0 && m.inv===0) m.estado = "QUIEBRE_ARRASTRE";
+      else if (m.qty===0 && invIni!==null && invIni>0) m.estado = "SIN_DEMANDA";
+      else if (m.inv===0 && m.qty>0 && m.qty<avgH*0.7) m.estado = "QUIEBRE";
+      else if (m.inv===0 && m.qty>0) m.estado = "QUIEBRE_PROBABLE";
+      else m.estado = "NORMAL";
+    }
+  }
+
+  // DEMANDA_ADJ
+  const QE = new Set(["QUIEBRE","QUIEBRE_PROBABLE","QUIEBRE_ARRASTRE"]);
+  for (const v of Object.values(vm)) {
+    const allNorm: {idx:number;qty:number}[] = [];
+    v.months.forEach((m,i) => { if (m.estado==="NORMAL") allNorm.push({idx:i,qty:m.qty}); });
+    const gAvg = allNorm.length ? Math.round(allNorm.reduce((s,n)=>s+n.qty,0)/allNorm.length) : null;
+    const nWin: number[] = [];
+    for (let i = 0; i < v.months.length; i++) {
+      const m = v.months[i]; const e = m.estado ?? "NORMAL";
+      if (QE.has(e)) {
+        if (nWin.length>0) {
+          const w=nWin.slice(-3); m.demanda_adj=Math.round(w.reduce((a,b)=>a+b,0)/w.length); m.fuente_adj="IMPUTADO_PREVIO";
+        } else {
+          const post=allNorm.filter(n=>n.idx>i).slice(0,3).map(n=>n.qty);
+          if (post.length>=3) { m.demanda_adj=Math.round(post.reduce((a,b)=>a+b,0)/post.length); m.fuente_adj="IMPUTADO_POSTERIOR"; }
+          else if (gAvg!==null) { m.demanda_adj=gAvg; m.fuente_adj="IMPUTADO_GLOBAL"; }
+          else { m.demanda_adj=m.qty; m.fuente_adj="SIN_BASE"; }
+        }
+      } else {
+        m.demanda_adj=m.qty; m.fuente_adj=e==="NORMAL"?"ORIGINAL":"SIN_DEMANDA";
+        if (e==="NORMAL") nWin.push(m.qty);
+      }
+    }
+  }
+
+  // Estacionalidad
+  function calcSeas(entries: FEntry[]): Record<number,number> {
+    const sum: Record<number,number>={}, yrs: Record<number,Set<number>>={};
+    for (let m=1;m<=12;m++){sum[m]=0;yrs[m]=new Set();}
+    for (const v of entries) for (const m of v.months) { sum[m.month]+=(m.demanda_adj??m.qty); yrs[m.month].add(m.year); }
+    const avg: Record<number,number>={};
+    for (let m=1;m<=12;m++) avg[m]=yrs[m].size>0?sum[m]/yrs[m].size:0;
+    return avg;
+  }
+  const bfx=(pfx:string)=>Object.entries(vm).filter(([id])=>id.startsWith(pfx)).map(([,v])=>v);
+  const sAll=calcSeas(Object.values(vm)), s113=calcSeas(bfx("113")), s121=calcSeas(bfx("121")), s112=calcSeas(bfx("112"));
+  const catSeasonOf=(id:string)=>id.startsWith("113")?s113:id.startsWith("121")?s121:id.startsWith("112")?s112:sAll;
+
+  // CatRatios
+  const catRatios: Record<string,number>={};
+  for (const [pfx,cs] of Object.entries({113:s113,121:s121,112:s112}) as [string,Record<number,number>][]) {
+    const v=Object.values(cs).filter(x=>x>0); catRatios[pfx]=v.length>1?Math.max(...v)/Math.min(...v):1;
+  }
+  const allSeaV=Object.values(sAll).filter(x=>x>0);
+  const allRatio=allSeaV.length>1?Math.max(...allSeaV)/Math.min(...allSeaV):1;
+
+  // Tipo demanda + CV_NORM
+  const cvNormMap: Record<string,number>={};
+  const tipoMap: Record<string,"CONTINUA"|"INTERMITENTE"|"POR_PROYECTO">={};
+  for (const [id,v] of Object.entries(vm)) {
+    const da=v.months.map(m=>m.demanda_adj??m.qty); const n=da.length;
+    const pct=da.filter(x=>x===0).length/(n||1);
+    const mn=da.reduce((a,b)=>a+b,0)/(n||1);
+    const cv=mn>0?Math.sqrt(da.map(x=>Math.pow(x-mn,2)).reduce((a,b)=>a+b,0)/(n||1))/mn:0;
+    const nv=v.months.filter(m=>m.fuente_adj==="ORIGINAL").map(m=>m.demanda_adj??m.qty);
+    const mN=nv.length?nv.reduce((a,b)=>a+b,0)/nv.length:0;
+    const cvN=mN>0?Math.sqrt(nv.map(x=>Math.pow(x-mN,2)).reduce((a,b)=>a+b,0)/(nv.length||1))/mN:0;
+    const cr=catRatios[id.substring(0,3)]??allRatio;
+    cvNormMap[id]=cvN;
+    if (pct>0.5||cv>1.5) tipoMap[id]="POR_PROYECTO";
+    else if ((pct<0.15&&cvN<0.6)||(pct<0.15&&cr>2.5)) tipoMap[id]="CONTINUA";
+    else tipoMap[id]="INTERMITENTE";
+  }
+
+  // SKU seasonal indices
+  const skuSeason: Record<string,Record<number,number>>={};
+  for (const [id,v] of Object.entries(vm)) {
+    const mv: Record<number,number[]>={}; for(let m=1;m<=12;m++) mv[m]=[];
+    for (const m of v.months) mv[m.month]?.push(m.demanda_adj??m.qty);
+    const ma: Record<number,number>={}; for(let m=1;m<=12;m++) ma[m]=mv[m].length?mv[m].reduce((a,b)=>a+b,0)/mv[m].length:0;
+    const aA=Object.values(ma).reduce((a,b)=>a+b,0)/12;
+    const cs=catSeasonOf(id); const cA=Object.values(cs).reduce((a,b)=>a+b,0)/12;
+    const tipo=tipoMap[id]??"CONTINUA"; const idx: Record<number,number>={};
+    for (let m=1;m<=12;m++) idx[m]=(tipo==="CONTINUA"&&mv[m].length>=2&&aA>0)?ma[m]/aA:(cA>0?cs[m]/cA:1);
+    skuSeason[id]=idx;
+  }
+
+  // RRE — proyectar desde enero 2025
+  type RRED={runrateAdj:number;runrateEstacional:number;factorEstacional:number;tipo:string};
+  const rreMap: Record<string,RRED>={};
+  for (const [id,v] of Object.entries(vm)) {
+    const lts=leadTimesMap[id]??[]; const ld=lts.length?Math.round(lts.reduce((a,b)=>a+b,0)/lts.length):60;
+    const arr=new Date(2025,0,1); arr.setDate(arr.getDate()+ld);
+    const pm=arr.getMonth()+1; const pm2=pm===12?1:pm+1;
+    const da=v.months.map(m=>m.demanda_adj??m.qty);
+    const aH=da.reduce((a,b)=>a+b,0)/(da.length||1);
+    const l3=da.slice(-3); const aL3=l3.reduce((a,b)=>a+b,0)/(l3.length||1);
+    const tipo=tipoMap[id]??"CONTINUA";
+    const [w3,wH]=tipo==="POR_PROYECTO"?[0.2,0.8]:tipo==="INTERMITENTE"?[0.4,0.6]:[0.7,0.3];
+    const rra=w3*aL3+wH*aH;
+    const ix=skuSeason[id]; const iP=(ix[pm]??1+ix[pm2]??1)/2; const iL3=v.months.slice(-3).map(m=>ix[m.month]??1).reduce((a,b)=>a+b,0)/3;
+    const fRaw=iL3>0?iP/iL3:1;
+    const [cLo,cHi]=tipo==="POR_PROYECTO"?[0.5,1.3]:tipo==="INTERMITENTE"?[0.6,1.4]:[0.7,1.5];
+    const fE=Math.min(Math.max(fRaw,cLo),cHi);
+    rreMap[id]={runrateAdj:rra,runrateEstacional:rra*fE,factorEstacional:fE,tipo};
+  }
+
+  // Corredor
+  type CorrD={coverP50:number;coverP75:number;coverP90:number;sugP50:number;sugP75:number;sugP90:number;invArribo:number;invActual:number;sugeridoFinal:number;escenarioDefault:string};
+  const corrMap: Record<string,CorrD>={};
+  for (const [id,v] of Object.entries(vm)) {
+    const rre=rreMap[id]; if(!rre) continue;
+    const tipo=tipoMap[id]??"CONTINUA"; const cvC=Math.min(cvNormMap[id]??0,1);
+    const fP50=1,fP75=1+0.674*cvC,fP90=1+1.282*cvC;
+    const cob=tipo==="CONTINUA"?7:tipo==="INTERMITENTE"?6:4;
+    const rv=rre.runrateEstacional;
+    const cP50=Math.round(rv*cob*fP50),cP75=Math.round(rv*cob*fP75),cP90=Math.round(rv*cob*fP90);
+    const lts=leadTimesMap[id]??[]; const lt=lts.length?Math.round(lts.reduce((a,b)=>a+b,0)/lts.length):60;
+    const iArr=Math.max(v.latestInventory-rv*(lt/30),0);
+    const sP50=Math.max(Math.round(cP50-iArr),0),sP75=Math.max(Math.round(cP75-iArr),0),sP90=Math.max(Math.round(cP90-iArr),0);
+    const esc=tipo==="POR_PROYECTO"?"P50":"P75"; const sf=esc==="P50"?sP50:sP75;
+    corrMap[id]={coverP50:cP50,coverP75:cP75,coverP90:cP90,sugP50:sP50,sugP75:sP75,sugP90:sP90,invArribo:iArr,invActual:v.latestInventory,sugeridoFinal:sf,escenarioDefault:esc};
+  }
+
+  // Gobernanza
+  const ssByPfx: Record<string,number>={};
+  for (const [id,c] of Object.entries(corrMap)) { const p=id.substring(0,3); ssByPfx[p]=(ssByPfx[p]??0)+c.sugeridoFinal; }
+  type GoberD={zona:"PELIGRO"|"CONFORT"|"OPORTUNIDAD";sugeridoGob:number};
+  const goberMap: Record<string,GoberD>={};
+  for (const [id,c] of Object.entries(corrMap)) {
+    const tipo=tipoMap[id]??"CONTINUA"; const rreV=rreMap[id]?.runrateEstacional??0;
+    const doh=rreV<0.001?9999:Math.round(c.invActual/(rreV/30));
+    let zona: "PELIGRO"|"CONFORT"|"OPORTUNIDAD";
+    if(c.invArribo<c.coverP50) zona="PELIGRO"; else if(c.invArribo<=c.coverP90) zona="CONFORT"; else zona="OPORTUNIDAD";
+    const pct=(ssByPfx[id.substring(0,3)]??0)>0?c.sugeridoFinal/(ssByPfx[id.substring(0,3)]??1):0;
+    const entCat=tipo!=="POR_PROYECTO"&&pct>=0.1;
+    const entra=tipo==="POR_PROYECTO"?(zona==="PELIGRO"||doh<60):(zona==="PELIGRO"||doh<60||entCat);
+    goberMap[id]={zona,sugeridoGob:entra?c.sugeridoFinal:0};
+  }
+
+  // ── Realidad 2025 ────────────────────────────────────────────────────────
+  type Act={demanda:number;mesesStockout:number;mesesData:number};
+  const act25: Record<string,Act>={};
+  for (const row of ventasRows) {
+    const yr=parseInt(row["AÑO"],10); if(yr!==2025) continue;
+    const id=row["COD. PRODUCTO"]?.trim(); if(!id) continue;
+    const qty=parseQty(row["UNIDADES VENDIDAS"]); const inv=parseInventory(row["INVENTARIO FINAL"]);
+    if(!act25[id]) act25[id]={demanda:0,mesesStockout:0,mesesData:0};
+    act25[id].demanda+=qty; act25[id].mesesData++;
+    if(inv===0) act25[id].mesesStockout++;
+  }
+  // Refinar con semanal 2025
+  for (const [id,a] of Object.entries(act25)) {
+    let wkSO=0;
+    for (let m=1;m<=12;m++) {
+      const ym=`2025-${String(m).padStart(2,"0")}`;
+      const e=weeklyData[id]?.[ym];
+      if(e&&e.totalWeeks>0&&e.stockoutWeeks/e.totalWeeks>0.5) wkSO++;
+    }
+    if(wkSO>0) a.mesesStockout=wkSO;
+  }
+
+  // ── Comparación ──────────────────────────────────────────────────────────
+  interface SKUPerf {
+    id:string; name:string; tipo:string; zonaModelo:string; sugeridoModelo:number; runrateModelo:number;
+    demandaReal2025:number; demandaRealMensual:number; mesesStockout2025:number; quiebreReal:boolean;
+    coberturaReal:number; errorRunrate:number; capitalExceso:number; gravedad:string;
+  }
+  const details: SKUPerf[]=[];
+  for (const id of Object.keys(vm)) {
+    const v=vm[id]; const g=goberMap[id]; const c=corrMap[id]; const rre=rreMap[id];
+    if(!g||!c||!rre) continue;
+    const a=act25[id]??{demanda:0,mesesStockout:0,mesesData:0};
+    const demReal=a.demanda; const moSO=a.mesesStockout; const quiebre=moSO>=2;
+    const tipo=tipoMap[id]??"CONTINUA"; const zona=g.zona; const sug=c.sugeridoFinal; const rrE=rre.runrateEstacional;
+    const drM=a.mesesData>0?demReal/a.mesesData:0;
+    const cob=demReal>0?sug/demReal:(sug>0?999:1);
+    const errRR=drM>0?Math.abs(rrE-drM)/drM*100:0;
+    const capExc=Math.max(sug-demReal,0);
+    let gravedad:string;
+    if(zona==="PELIGRO"&&quiebre) gravedad="ACIERTO";
+    else if(zona==="PELIGRO"&&!quiebre) gravedad="CONSERVADOR";
+    else if(zona!=="PELIGRO"&&quiebre) gravedad="CRITICO";
+    else gravedad="ACIERTO";
+    details.push({id,name:v.name,tipo,zonaModelo:zona,sugeridoModelo:sug,runrateModelo:rrE,demandaReal2025:demReal,demandaRealMensual:drM,mesesStockout2025:moSO,quiebreReal:quiebre,coberturaReal:Number(cob.toFixed(3)),errorRunrate:Number(errRR.toFixed(1)),capitalExceso:capExc,gravedad});
+  }
+
+  // ── Métricas ─────────────────────────────────────────────────────────────
+  const cm={PELIGRO:{quebro:0,noQuebro:0},CONFORT:{quebro:0,noQuebro:0},OPORTUNIDAD:{quebro:0,noQuebro:0}};
+  for (const s of details) { const r=cm[s.zonaModelo as keyof typeof cm]; if(r){if(s.quiebreReal)r.quebro++;else r.noQuebro++;} }
+
+  const kpi1=details.filter(s=>s.gravedad==="CRITICO").length/(details.length||1)*100;
+  const kpi2={
+    subestimado: details.filter(s=>s.coberturaReal<0.8).length,
+    bien:        details.filter(s=>s.coberturaReal>=0.8&&s.coberturaReal<=1.2).length,
+    mediaAlta:   details.filter(s=>s.coberturaReal>1.2&&s.coberturaReal<=1.5).length,
+    sobreestimado:details.filter(s=>s.coberturaReal>1.5&&s.coberturaReal<99).length,
+  };
+  const avgErr=(arr:SKUPerf[])=>arr.length?arr.reduce((s,d)=>s+d.errorRunrate,0)/arr.length:0;
+  const byTipo=(t:string)=>details.filter(s=>s.tipo===t&&s.demandaRealMensual>0);
+  const kpi3={
+    CONTINUA:     Number(avgErr(byTipo("CONTINUA")).toFixed(1)),
+    INTERMITENTE: Number(avgErr(byTipo("INTERMITENTE")).toFixed(1)),
+    POR_PROYECTO: Number(avgErr(byTipo("POR_PROYECTO")).toFixed(1)),
+    total:        Number(avgErr(details.filter(s=>s.demandaRealMensual>0)).toFixed(1)),
+  };
+
+  const top10Fallos=[...details].filter(s=>s.gravedad==="CRITICO")
+    .sort((a,b)=>b.mesesStockout2025-a.mesesStockout2025||b.errorRunrate-a.errorRunrate).slice(0,10);
+  const top10Sobre=[...details].filter(s=>s.capitalExceso>0)
+    .sort((a,b)=>b.capitalExceso-a.capitalExceso).slice(0,10);
+
+  const resumen=["CONTINUA","INTERMITENTE","POR_PROYECTO"].map(tipo=>{
+    const g=details.filter(s=>s.tipo===tipo);
+    const ok=g.filter(s=>s.gravedad!=="CRITICO").length;
+    return {tipo,count:g.length,accuracyZona:g.length?Number((ok/g.length*100).toFixed(1)):0,errorRunrate:Number(avgErr(g.filter(s=>s.demandaRealMensual>0)).toFixed(1)),coberturaPromedio:g.length?Number((g.reduce((s,d)=>s+Math.min(d.coberturaReal,10),0)/g.length).toFixed(2)):0};
+  });
+
+  console.log(`\n══ PERFORMANCE BACKTESTING (corte ${CUTOFF}) ═══════════════`);
+  console.log(`  SKUs evaluados: ${details.length}  |  Error crítico: ${kpi1.toFixed(1)}%  |  Error RunRate: ${kpi3.total}%`);
+  console.log(`  Matriz: PELIGRO(+${cm.PELIGRO.quebro}/-${cm.PELIGRO.noQuebro})  CONFORT(+${cm.CONFORT.quebro}/-${cm.CONFORT.noQuebro})  OPORTUNIDAD(+${cm.OPORTUNIDAD.quebro}/-${cm.OPORTUNIDAD.noQuebro})`);
+  console.log("══════════════════════════════════════════════════════════");
+
+  return {cutoff:CUTOFF,skuCount:details.length,confusionMatrix:cm,kpi1ErrorCritico:Number(kpi1.toFixed(1)),kpi2Cobertura:kpi2,kpi3ErrorRunrate:kpi3,top10FallosGraves:top10Fallos,top10Sobreestimaciones:top10Sobre,resumenPorTipo:resumen,skuDetails:details};
+}
+
 // --- Server ---
 async function startServer() {
   const app = express();
@@ -1498,6 +1773,10 @@ async function startServer() {
   app.get("/api/supplies",  (_req, res) => res.json(supplies));
   app.get("/api/history",   (_req, res) => res.json(history));
   app.get("/api/inventory", (_req, res) => res.json(inventory));
+
+  // Performance backtesting — computado una sola vez al arrancar
+  const performanceReport = buildPerformanceReport();
+  app.get("/api/performance", (_req, res) => res.json(performanceReport));
 
   // Weekly inventory per SKU — max 6 months back
   app.get("/api/weekly", (req, res) => {
