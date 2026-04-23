@@ -1,6 +1,10 @@
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AlertTriangle, TrendingUp, Target, Loader2, CheckCircle2, TrendingDown } from "lucide-react";
+import {
+  ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Legend,
+} from "recharts";
 
 interface ConfusionMatrix {
   PELIGRO:     { quebro: number; noQuebro: number };
@@ -20,6 +24,14 @@ interface TipoResumen {
   tipo: string; count: number; accuracyZona: number; errorRunrate: number; coberturaPromedio: number;
 }
 
+interface MonthPoint {
+  mes: string;
+  demandaReal: number;
+  p50: number;
+  p75: number;
+  p90: number;
+}
+
 interface PerformanceReport {
   cutoff: string;
   skuCount: number;
@@ -30,6 +42,7 @@ interface PerformanceReport {
   top10FallosGraves: SKUPerf[];
   top10Sobreestimaciones: SKUPerf[];
   resumenPorTipo: TipoResumen[];
+  monthlyTimeSeries: MonthPoint[];
 }
 
 function TipoBadge({ tipo }: { tipo: string }) {
@@ -101,7 +114,7 @@ export default function Performance() {
     <div className="p-6 text-red-500 text-sm">Error al cargar el reporte: {error ?? "Sin datos"}</div>
   );
 
-  const { confusionMatrix: cm, kpi1ErrorCritico, kpi2Cobertura, kpi3ErrorRunrate, resumenPorTipo, top10FallosGraves, top10Sobreestimaciones, skuCount, cutoff } = data;
+  const { confusionMatrix: cm, kpi1ErrorCritico, kpi2Cobertura, kpi3ErrorRunrate, resumenPorTipo, top10FallosGraves, top10Sobreestimaciones, skuCount, cutoff, monthlyTimeSeries } = data;
   const kpi1Ok = kpi1ErrorCritico < 10;
 
   return (
@@ -121,6 +134,59 @@ export default function Performance() {
           <span className="text-xs bg-orange-50 text-orange-700 border border-orange-200 px-3 py-1 rounded-full font-semibold">Solo gestión técnica</span>
         </div>
       </div>
+
+      {/* ── Gráfico: Proyectado en banda vs Ejecutado ── */}
+      <Card className="border-gray-200 shadow-sm">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-bold">Proyectado vs Ejecutado — Demanda portafolio 2025</CardTitle>
+          <p className="text-[11px] text-gray-400">
+            Banda azul = corredor P50–P90 del pipeline congelado dic-2024.
+            Línea naranja = demanda real acumulada del portafolio mes a mes.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={280}>
+            <ComposedChart data={monthlyTimeSeries.map(d => ({
+              ...d,
+              bandBase: d.p50,
+              bandWidth: d.p90 - d.p50,
+            }))} margin={{ top: 8, right: 24, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="mes" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}k` : String(v)} width={40} />
+              <Tooltip
+                formatter={(value: number, name: string) => {
+                  if (name === "bandBase") return null;
+                  const labels: Record<string, string> = {
+                    bandWidth: "Corredor P50–P90",
+                    p75: "Proyectado P75",
+                    demandaReal: "Ejecutado real",
+                  };
+                  return [value.toLocaleString("es-CO"), labels[name] ?? name];
+                }}
+                labelStyle={{ fontWeight: "bold", fontSize: 12 }}
+                contentStyle={{ fontSize: 11 }}
+              />
+              <Legend
+                formatter={name => ({
+                  bandWidth: "Corredor P50–P90",
+                  p75: "Proyectado P75",
+                  demandaReal: "Ejecutado real",
+                }[name] ?? name)}
+                wrapperStyle={{ fontSize: 11 }}
+              />
+              {/* Banda invisible (base del stack) */}
+              <Area dataKey="bandBase" stackId="band" stroke="none" fill="none" legendType="none" />
+              {/* Banda visible P50→P90 */}
+              <Area dataKey="bandWidth" stackId="band" stroke="none" fill="#93C5FD" fillOpacity={0.35} name="bandWidth" />
+              {/* Línea P75 proyectada */}
+              <Line dataKey="p75" stroke="#3B82F6" strokeWidth={1.5} strokeDasharray="5 3" dot={false} name="p75" />
+              {/* Línea ejecutado real */}
+              <Line dataKey="demandaReal" stroke="#EA580C" strokeWidth={2.5} dot={{ r: 3, fill: "#EA580C" }} activeDot={{ r: 5 }} name="demandaReal" />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
 
       {/* ── Sección 1: KPI Cards ── */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

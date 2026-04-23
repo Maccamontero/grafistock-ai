@@ -1754,12 +1754,42 @@ function buildPerformanceReport() {
     return {tipo,count:g.length,accuracyZona:g.length?Number((ok/g.length*100).toFixed(1)):0,errorRunrate:Number(avgErr(g.filter(s=>s.demandaRealMensual>0)).toFixed(1)),coberturaPromedio:g.length?Number((g.reduce((s,d)=>s+Math.min(d.coberturaReal,10),0)/g.length).toFixed(2)):0};
   });
 
+  // ── Serie temporal mensual 2025 ────────────────────────────────────────────
+  const mAct: Record<number,number>={};
+  for(let m=1;m<=12;m++) mAct[m]=0;
+  for(const row of ventasRows){
+    const yr=parseInt(row["AÑO"],10); if(yr!==2025) continue;
+    const id=row["COD. PRODUCTO"]?.trim(); if(!id||!vm[id]) continue;
+    const mo=parseInt(row["MES NUMERO"],10); if(isNaN(mo)||mo<1||mo>12) continue;
+    mAct[mo]+=parseQty(row["UNIDADES VENDIDAS"]);
+  }
+  const mP50:Record<number,number>={},mP75:Record<number,number>={},mP90:Record<number,number>={};
+  for(let m=1;m<=12;m++){mP50[m]=0;mP75[m]=0;mP90[m]=0;}
+  for(const id of Object.keys(vm)){
+    const rre=rreMap[id]; if(!rre) continue;
+    const cvC=Math.min(cvNormMap[id]??0,1);
+    const fp75=1+0.674*cvC, fp90=1+1.282*cvC;
+    const seas=skuSeason[id];
+    for(let m=1;m<=12;m++){
+      const base=rre.runrateAdj*(seas[m]??1);
+      mP50[m]+=base; mP75[m]+=base*fp75; mP90[m]+=base*fp90;
+    }
+  }
+  const MNAMES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+  const monthlyTimeSeries=Array.from({length:12},(_,i)=>({
+    mes: MNAMES[i],
+    demandaReal: Math.round(mAct[i+1]),
+    p50: Math.round(mP50[i+1]),
+    p75: Math.round(mP75[i+1]),
+    p90: Math.round(mP90[i+1]),
+  }));
+
   console.log(`\n══ PERFORMANCE BACKTESTING (corte ${CUTOFF}) ═══════════════`);
   console.log(`  SKUs evaluados: ${details.length}  |  Error crítico: ${kpi1.toFixed(1)}%  |  Error RunRate: ${kpi3.total}%`);
   console.log(`  Matriz: PELIGRO(+${cm.PELIGRO.quebro}/-${cm.PELIGRO.noQuebro})  CONFORT(+${cm.CONFORT.quebro}/-${cm.CONFORT.noQuebro})  OPORTUNIDAD(+${cm.OPORTUNIDAD.quebro}/-${cm.OPORTUNIDAD.noQuebro})`);
   console.log("══════════════════════════════════════════════════════════");
 
-  return {cutoff:CUTOFF,skuCount:details.length,confusionMatrix:cm,kpi1ErrorCritico:Number(kpi1.toFixed(1)),kpi2Cobertura:kpi2,kpi3ErrorRunrate:kpi3,top10FallosGraves:top10Fallos,top10Sobreestimaciones:top10Sobre,resumenPorTipo:resumen,skuDetails:details};
+  return {cutoff:CUTOFF,skuCount:details.length,confusionMatrix:cm,kpi1ErrorCritico:Number(kpi1.toFixed(1)),kpi2Cobertura:kpi2,kpi3ErrorRunrate:kpi3,top10FallosGraves:top10Fallos,top10Sobreestimaciones:top10Sobre,resumenPorTipo:resumen,skuDetails:details,monthlyTimeSeries};
 }
 
 // --- Server ---
