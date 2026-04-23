@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import Fuse from "fuse.js";
-import { 
-  ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar, ReferenceLine
+import {
+  ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar, ReferenceLine, Cell
 } from "recharts";
 import { 
   Package, TrendingUp, Calendar, AlertTriangle, Ship, CheckCircle2, Search, BrainCircuit, Loader2, Layers
@@ -33,6 +33,11 @@ interface HistoryRecord {
   date: string;
   itemId: string;
   quantity: number;
+  inventario: number;
+}
+
+interface WeeklyRecord {
+  fecha: string;       // "YYYY-MM-DD"
   inventario: number;
 }
 
@@ -86,6 +91,8 @@ export default function App() {
   const [forecasts, setForecasts] = useState<Record<string, AnalysisResult>>({});
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [chartMonths, setChartMonths] = useState<number | null>(null);
+  const [chartView, setChartView]   = useState<"mensual" | "semanal">("mensual");
+  const [weeklyRawData, setWeeklyRawData] = useState<WeeklyRecord[]>([]);
   const [isAnalysisOpen, setIsAnalysisOpen] = useState(false);
   const [orderPopup, setOrderPopup] = useState<{date: string; orders: {cantidad:number; fechaOrden:string; fechaLlegada:string; proveedor:string}[]} | null>(null);
   
@@ -142,6 +149,14 @@ export default function App() {
     };
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (!selectedItem || chartView !== "semanal") return;
+    fetch(`/api/weekly?itemId=${selectedItem}&months=6`)
+      .then(r => r.json())
+      .then(setWeeklyRawData)
+      .catch(() => setWeeklyRawData([]));
+  }, [selectedItem, chartView]);
 
   const handleAnalyze = async (itemId: string) => {
     const item = supplies.find(s => s.id === itemId);
@@ -330,6 +345,19 @@ export default function App() {
       runrate_override: (currentInv as any).runrate_estacional,
     });
   }, [selectedItem, currentItem, currentInv]);
+
+  const weeklyChartData = useMemo(() => {
+    if (chartView !== "semanal" || weeklyRawData.length === 0) return [];
+    return weeklyRawData.map(r => {
+      const d = new Date(r.fecha + "T12:00:00");
+      return {
+        fecha:      d.toLocaleDateString("es-CO", { day: "2-digit", month: "short" }),
+        isoFecha:   r.fecha,
+        inventario: r.inventario,
+        stockout:   r.inventario === 0,
+      };
+    });
+  }, [chartView, weeklyRawData]);
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-orange-100">
@@ -562,6 +590,24 @@ export default function App() {
                             <CardDescription>Stock actual, en tránsito, pedidos nuevos y sugeridos vs. ventas proyectadas · SKU {currentItem.id}</CardDescription>
                           </div>
                           <div className="flex items-center gap-3">
+                            {/* Toggle Mensual / Semanal */}
+                            <div className="flex items-center bg-gray-100 rounded-full p-0.5">
+                              {(["mensual", "semanal"] as const).map(v => (
+                                <button
+                                  key={v}
+                                  onClick={() => setChartView(v)}
+                                  className={`px-3 py-1 text-xs font-semibold rounded-full transition-colors capitalize ${
+                                    chartView === v
+                                      ? "bg-white text-gray-800 shadow-sm"
+                                      : "text-gray-500 hover:text-gray-700"
+                                  }`}
+                                >
+                                  {v === "mensual" ? "Mensual" : "Semanal · 6M"}
+                                </button>
+                              ))}
+                            </div>
+                            {/* Período — solo en vista mensual */}
+                            {chartView === "mensual" && (
                             <div className="flex gap-1">
                               {([{ label: "3M", value: 3 }, { label: "6M", value: 6 }, { label: "1A", value: 12 }, { label: "2A", value: 24 }, { label: "Todo", value: null }] as { label: string; value: number | null }[]).map(opt => (
                                 <button
@@ -577,6 +623,7 @@ export default function App() {
                                 </button>
                               ))}
                             </div>
+                            )}
                           <Button
                             onClick={() => handleAnalyze(selectedItem)} 
                             disabled={isAnalyzing}
@@ -593,6 +640,51 @@ export default function App() {
                         </CardHeader>
                         <CardContent>
                           <div className="h-[450px] w-full">
+                          {chartView === "semanal" ? (
+                            weeklyChartData.length === 0 ? (
+                              <div className="flex items-center justify-center h-full text-gray-400 text-sm">
+                                Sin datos semanales disponibles para los últimos 6 meses
+                              </div>
+                            ) : (
+                              <ResponsiveContainer width="100%" height="100%">
+                                <ComposedChart data={weeklyChartData} margin={{ right: 80 }}>
+                                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                                  <XAxis
+                                    dataKey="fecha"
+                                    axisLine={false}
+                                    tickLine={false}
+                                    tick={{ fontSize: 10, fill: '#6B7280' }}
+                                    interval={3}
+                                    dy={10}
+                                  />
+                                  <YAxis
+                                    axisLine={false}
+                                    tickLine={false}
+                                    tick={{ fontSize: 11, fill: '#1E3A8A' }}
+                                    label={{ value: 'Stock', angle: -90, position: 'insideLeft', offset: 10, style: { fontSize: 10, fill: '#1E3A8A' } }}
+                                  />
+                                  <Tooltip
+                                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                                    formatter={(value: any, _name: any, props: any) => [
+                                      `${Number(value).toLocaleString()} uds${props.payload.stockout ? '  ⚠ SIN STOCK' : ''}`,
+                                      'Inventario semanal'
+                                    ]}
+                                  />
+                                  <Bar dataKey="inventario" name="Inventario Semanal" radius={[2, 2, 0, 0]}>
+                                    {weeklyChartData.map((entry, idx) => (
+                                      <Cell key={`w-${idx}`} fill={entry.stockout ? '#FCA5A5' : '#93C5FD'} />
+                                    ))}
+                                  </Bar>
+                                  <ReferenceLine
+                                    y={(currentInv?.runrate_estacional ?? 0) / 4.33}
+                                    stroke="#EA580C"
+                                    strokeDasharray="5 5"
+                                    label={{ value: 'Consumo semanal proy.', position: 'right', fill: '#EA580C', fontSize: 9 }}
+                                  />
+                                </ComposedChart>
+                              </ResponsiveContainer>
+                            )
+                          ) : (
                             <ResponsiveContainer width="100%" height="100%">
                               <ComposedChart data={filteredChartData}>
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
@@ -765,6 +857,7 @@ export default function App() {
                                 />
                               </ComposedChart>
                             </ResponsiveContainer>
+                          )}
                           </div>
                         </CardContent>
                       </Card>

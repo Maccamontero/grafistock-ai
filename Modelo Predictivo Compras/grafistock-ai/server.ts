@@ -110,15 +110,17 @@ function loadImportaciones(): ImportRow[] {
 }
 
 function loadVentas(): VentasRow[] {
-  const filePath = path.join(__dirname, "public", "data", "Consolidado ventas e inventarios mes a mes CSV.csv");
+  const filePath = path.join(__dirname, "public", "data", "Consolidado ventas e inventario mes a mes CSV.csv");
   if (!fs.existsSync(filePath)) return [];
   return readCSV(filePath) as VentasRow[];
 }
 
 // --- Weekly inventory CSV parser ---
-interface WeeklyEntry { stockoutWeeks: number; totalWeeks: number; }
+interface WeeklyEntry  { stockoutWeeks: number; totalWeeks: number; }
+interface WeeklyRecord { fecha: string; inventario: number; }
 interface WeeklyResult {
   weeklyData: Record<string, Record<string, WeeklyEntry>>;
+  weeklyRaw:  Record<string, WeeklyRecord[]>;
   allWeeklySkus: Set<string>;
 }
 
@@ -129,6 +131,7 @@ function loadWeeklyInventory(): WeeklyResult {
     "noviembre": 11, "novimbre": 11, "diciembre": 12,
   };
   const weeklyData: Record<string, Record<string, WeeklyEntry>> = {};
+  const weeklyRaw:  Record<string, WeeklyRecord[]> = {};
   const allWeeklySkus = new Set<string>();
 
   const files = [
@@ -189,17 +192,21 @@ function loadWeeklyInventory(): WeeklyResult {
         const inv = parseFloat(invStr);
         if (isNaN(inv)) continue;
 
-        const ym = `${year}-${String(meta.month).padStart(2, "0")}`;
+        const ym  = `${year}-${String(meta.month).padStart(2, "0")}`;
+        const iso = `${year}-${String(meta.month).padStart(2, "0")}-${String(meta.day).padStart(2, "0")}`;
+
         if (!weeklyData[id])      weeklyData[id] = {};
         if (!weeklyData[id][ym])  weeklyData[id][ym] = { stockoutWeeks: 0, totalWeeks: 0 };
-
         weeklyData[id][ym].totalWeeks++;
         if (inv === 0) weeklyData[id][ym].stockoutWeeks++;
+
+        if (!weeklyRaw[id]) weeklyRaw[id] = [];
+        weeklyRaw[id].push({ fecha: iso, inventario: inv });
       }
     }
   }
 
-  return { weeklyData, allWeeklySkus };
+  return { weeklyData, weeklyRaw, allWeeklySkus };
 }
 
 // --- Build API data from real CSVs ---
@@ -357,7 +364,7 @@ function buildData() {
   }
 
   // ── 2.5b. Enriquecimiento con inventario semanal → QUIEBRE_PARCIAL ──────────
-  const { weeklyData, allWeeklySkus } = loadWeeklyInventory();
+  const { weeklyData, weeklyRaw, allWeeklySkus } = loadWeeklyInventory();
 
   for (const [id, v] of Object.entries(ventasMap)) {
     for (const m of v.months) {
@@ -1477,7 +1484,7 @@ function buildData() {
   console.log(`   (${deltaDemanda.length} SKUs en total con al menos 1 mes AJUSTE_PROPORCIONAL)`);
   console.log("══════════════════════════════════════════════════════════");
 
-  return { supplies, history, inventory };
+  return { supplies, history, inventory, weeklyRaw };
 }
 
 // --- Server ---
@@ -1486,11 +1493,27 @@ async function startServer() {
   const PORT = 3000;
   app.use(express.json());
 
-  const { supplies, history, inventory } = buildData();
+  const { supplies, history, inventory, weeklyRaw } = buildData();
 
-  app.get("/api/supplies", (_req, res) => res.json(supplies));
-  app.get("/api/history", (_req, res) => res.json(history));
+  app.get("/api/supplies",  (_req, res) => res.json(supplies));
+  app.get("/api/history",   (_req, res) => res.json(history));
   app.get("/api/inventory", (_req, res) => res.json(inventory));
+
+  // Weekly inventory per SKU — max 6 months back
+  app.get("/api/weekly", (req, res) => {
+    const itemId = String(req.query.itemId ?? "");
+    const months = Math.min(Math.max(parseInt(String(req.query.months ?? "6"), 10), 1), 6);
+    if (!itemId || !weeklyRaw[itemId]) return res.json([]);
+
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - months);
+    const cutoffStr = cutoff.toISOString().substring(0, 10);
+
+    const data = (weeklyRaw[itemId] ?? [])
+      .filter(r => r.fecha >= cutoffStr)
+      .sort((a, b) => a.fecha.localeCompare(b.fecha));
+    return res.json(data);
+  });
 
   app.post("/api/analyze", async (req, res) => {
     const { item, history: itemHistory, inv } = req.body;
