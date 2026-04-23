@@ -221,11 +221,42 @@ La respuesta se muestra en el dashboard como panel de análisis AI junto a las t
 
 ---
 
+## Backtesting — Resultados de referencia (corte diciembre 2024)
+
+Pipeline congelado con datos hasta 2024-12. Actuals: demanda real 2025 + datos semanales de stockout.  
+Universo evaluado: **163 SKUs** | 23 con quiebre real en 2025 (14.1% del portafolio).
+
+### Métricas clave
+
+| KPI | Resultado | Referencia |
+|---|---|---|
+| Error crítico (CONFORT/OPORTUNIDAD que quebraron) | **0.6%** — 1 de 163 SKUs | Objetivo < 10% ✓ |
+| Sensibilidad (quiebres detectados en PELIGRO) | **95.7%** — 22 de 23 quiebres | — |
+| Error RunRate CONTINUA | **48.6%** | — |
+| Error RunRate INTERMITENTE | 418.1% | — |
+| Error RunRate POR_PROYECTO | 257.9% | — |
+
+### Distribución de zonas
+
+| Zona | SKUs | % | Quebró | No quebró |
+|---|---|---|---|---|
+| PELIGRO | 62 | 38% | 22 | 40 |
+| CONFORT | 19 | 12% | 1 | 18 |
+| OPORTUNIDAD | 82 | 50% | 0 | 82 |
+
+### Pendientes — próxima iteración
+
+- **KPI 2 cobertura**: recalibrar denominador. Actualmente `sugerido / demanda_anual` compara una orden (4-7 meses) contra 12 meses, lo que clasifica como subestimado incluso a pedidos correctos. Corrección: dividir demanda real por los meses de cobertura objetivo del tipo antes de calcular el ratio.
+- **Croston para INTERMITENTE**: evaluar método de Croston o suavizado exponencial de Holt como alternativa al promedio ponderado 40/60 actual. El error RunRate de 418% en INTERMITENTE es el principal driver del 288% total.
+
+---
+
 ## Estado del sistema
 
 | Módulo | Estado |
 |---|---|
 | Clasificación ESTADO (quiebres) | Producción |
+| Enriquecimiento semanal (QUIEBRE_PARCIAL) | Producción |
 | Imputación DEMANDA_ADJ | Producción |
 | Clasificación tipo demanda | Producción |
 | RunRate ADJ (ponderado por tipo) | Producción |
@@ -233,4 +264,5 @@ La respuesta se muestra en el dashboard como panel de análisis AI junto a las t
 | Corredor P50/P75/P90 | Producción |
 | Gobernanza contenedor (ZONA + entrada) | Producción |
 | Integración Claude API (interpretativo) | Producción |
+| Módulo Performance / backtesting | Producción |
 | Frontend dashboard (React) | En desarrollo |
