@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, Fragment } from "react";
 import Fuse from "fuse.js";
 import {
   ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar, ReferenceLine, Cell
@@ -18,7 +18,7 @@ import { calculateInventoryMetrics, InventoryStats } from "@/src/lib/inventorySt
 import { cleanSupplyChainData, MasterRecord } from "@/src/lib/dataCleaning";
 import { masterProducts, MasterProduct } from "@/src/data/masterProducts";
 import { motion, AnimatePresence } from "framer-motion";
-import { Calculator, Info, FileJson, FileUp, Table as TableIcon, Database, Eraser, CheckSquare, Square, Filter } from "lucide-react";
+import { Calculator, Info, FileJson, FileUp, Table as TableIcon, Database, Eraser, CheckSquare, Square, Filter, ChevronDown, ChevronRight } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 interface Supply {
@@ -105,6 +105,8 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [quantityBlockOpen, setQuantityBlockOpen] = useState(true);
+  const [expandedCatInTable, setExpandedCatInTable] = useState<string | null>(null);
   const searchRef = useRef<HTMLDivElement>(null);
 
   const fuse = useMemo(() => new Fuse(supplies, {
@@ -144,9 +146,6 @@ export default function App() {
       setSupplies(sData);
       setHistory(hData);
       setInventory(iData);
-      if (sData.length > 0) {
-        setSelectedItem(sData[0].id);
-      }
     };
     fetchData();
   }, []);
@@ -205,6 +204,49 @@ export default function App() {
     inventory.forEach(r => { m[r.itemId] = r; });
     return m;
   }, [inventory]);
+
+  const categorySummary = useMemo(() => {
+    const cats = [...new Set(supplies.map(s => s.category))].sort();
+    return cats.map(cat => {
+      const catSupplies = supplies.filter(s => s.category === cat);
+      const catInvs = catSupplies.map(s => invMap[s.id]).filter(Boolean) as InventoryRecord[];
+      return {
+        category: cat,
+        total: catSupplies.length,
+        peligro:      catInvs.filter(i => i.zona === "PELIGRO").length,
+        confort:      catInvs.filter(i => i.zona === "CONFORT").length,
+        oportunidad:  catInvs.filter(i => i.zona === "OPORTUNIDAD").length,
+        entranContenedor: catInvs.filter(i => i.entra_contenedor).length,
+      };
+    }).sort((a, b) => b.peligro - a.peligro || b.entranContenedor - a.entranContenedor);
+  }, [supplies, invMap]);
+
+  const priorityItems = useMemo(() => {
+    const catOrder = Object.fromEntries(categorySummary.map((c, i) => [c.category, i]));
+    return supplies
+      .map(s => ({ supply: s, inv: invMap[s.id] }))
+      .filter(({ inv }) => inv && (inv.zona === "PELIGRO" || inv.entra_contenedor || inv.revisar_precio))
+      .sort((a, b) => {
+        const urgA = a.inv?.zona === "PELIGRO" ? 0 : a.inv?.entra_contenedor ? 1 : 2;
+        const urgB = b.inv?.zona === "PELIGRO" ? 0 : b.inv?.entra_contenedor ? 1 : 2;
+        if (urgA !== urgB) return urgA - urgB;
+        const catA = catOrder[a.supply.category] ?? 99;
+        const catB = catOrder[b.supply.category] ?? 99;
+        if (catA !== catB) return catA - catB;
+        return (a.inv?.doh ?? 9999) - (b.inv?.doh ?? 9999);
+      });
+  }, [supplies, invMap, categorySummary]);
+
+  function getAnalysisText(inv: InventoryRecord): string {
+    const doh = inv.doh === 9999 ? "∞" : inv.doh != null ? `${inv.doh}d` : "—";
+    if (inv.zona === "PELIGRO")
+      return `Al arribo: ${inv.inv_arribo?.toLocaleString() ?? "?"} uds vs. mínimo ${inv.cover_p50?.toLocaleString() ?? "?"}. Sugerido: ${inv.sugerido_gob?.toLocaleString() ?? "?"} uds. DOH actual: ${doh}.`;
+    if (inv.revisar_precio)
+      return `Ventas recientes superan 1.3× el RunRate. Revisar precio de venta antes de incluir en el contenedor.`;
+    if (inv.entra_contenedor)
+      return `En zona ${inv.zona ?? "CONFORT"}. Entra al contenedor por criterio de categoría. Sugerido: ${inv.sugerido_gob?.toLocaleString() ?? "?"} uds. DOH: ${doh}.`;
+    return `DOH: ${doh}.`;
+  }
 
   const currentItem = supplies.find(s => s.id === selectedItem);
   const currentInv = inventory.find(i => i.itemId === selectedItem);
@@ -498,7 +540,72 @@ export default function App() {
                 </div>
               </Card>
 
-              {/* Main Content — full width */}
+              {/* ── Vista predeterminada: sin producto seleccionado ── */}
+              {!selectedItem && supplies.length > 0 && (
+                <Card className="border-gray-200 shadow-sm">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm font-bold flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-orange-600" />
+                      Revisión prioritaria — {priorityItems.length} productos requieren atención
+                    </CardTitle>
+                    <p className="text-[11px] text-gray-400">Seleccioná un producto para ver su análisis completo y recomendación de compra.</p>
+                  </CardHeader>
+                  <CardContent>
+                    {priorityItems.length === 0 ? (
+                      <div className="flex items-center gap-2 text-green-600 py-4">
+                        <CheckCircle2 className="w-5 h-5" />
+                        <p className="text-sm font-semibold">Todos los productos están dentro del corredor de seguridad.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {categorySummary
+                          .filter(cat => priorityItems.some(p => p.supply.category === cat.category))
+                          .map(catInfo => {
+                            const catItems = priorityItems.filter(p => p.supply.category === catInfo.category);
+                            return (
+                              <div key={catInfo.category}>
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{catInfo.category}</span>
+                                  {catInfo.peligro > 0 && <span className="text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-bold">{catInfo.peligro} PELIGRO</span>}
+                                  {catInfo.entranContenedor > 0 && <span className="text-[10px] bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded font-bold">{catInfo.entranContenedor} en contenedor</span>}
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                                  {catItems.map(({ supply, inv }) => {
+                                    const zona = inv?.zona;
+                                    const borderCls = zona === "PELIGRO" ? "border-l-red-400" : zona === "CONFORT" ? "border-l-green-400" : "border-l-yellow-400";
+                                    const zonaBg   = zona === "PELIGRO" ? "bg-red-50"   : zona === "CONFORT" ? "bg-green-50"  : "bg-yellow-50";
+                                    const zonaText = zona === "PELIGRO" ? "text-red-700" : zona === "CONFORT" ? "text-green-700" : "text-yellow-700";
+                                    return (
+                                      <button
+                                        key={supply.id}
+                                        onClick={() => { setSelectedItem(supply.id); setSearchTerm(supply.name); }}
+                                        className={`text-left p-3 bg-white rounded-lg border border-gray-100 border-l-4 ${borderCls} hover:shadow-md transition-all hover:-translate-y-0.5`}
+                                      >
+                                        <div className="flex items-start justify-between gap-2 mb-1">
+                                          <div className="min-w-0">
+                                            <p className="text-xs font-bold text-gray-800 truncate">{supply.name.substring(0, 38)}</p>
+                                            <p className="text-[9px] font-mono text-gray-400 mt-0.5">{supply.id}</p>
+                                          </div>
+                                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${zonaBg} ${zonaText}`}>{zona}</span>
+                                        </div>
+                                        <p className="text-[10px] text-gray-500 leading-tight">{inv ? getAnalysisText(inv) : ""}</p>
+                                        {inv?.revisar_precio && (
+                                          <span className="text-[9px] mt-1 inline-block bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded font-bold">⚠ Revisar precio</span>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* ── Producto seleccionado ── */}
               <div className="space-y-6">
                 {selectedItem && currentItem && (
                   <AnimatePresence mode="wait">
@@ -881,10 +988,17 @@ export default function App() {
                                 {currentInv.revisar_precio && (
                                   <span className="text-[10px] bg-yellow-100 text-yellow-800 font-bold px-2 py-0.5 rounded-full">⚠ Revisar precio de venta antes de reponer</span>
                                 )}
+                                <button
+                                  onClick={() => setQuantityBlockOpen(o => !o)}
+                                  className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+                                  title={quantityBlockOpen ? "Contraer" : "Desplegar"}
+                                >
+                                  <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${quantityBlockOpen ? "" : "-rotate-90"}`} />
+                                </button>
                               </div>
                             </div>
                           </CardHeader>
-                          <CardContent className="space-y-5">
+                          {quantityBlockOpen && <CardContent className="space-y-5">
 
                             {/* Tres opciones de compra */}
                             <div className="grid grid-cols-3 gap-3">
@@ -980,7 +1094,7 @@ export default function App() {
                               </div>
                             )}
 
-                          </CardContent>
+                          </CardContent>}
                         </Card>
                       )}
 
@@ -1127,6 +1241,90 @@ export default function App() {
                   </AnimatePresence>
                 )}
               </div>
+
+              {/* ── Tabla permanente: resumen por categoría ── */}
+              {supplies.length > 0 && (
+                <Card className="border-gray-200 shadow-sm">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-bold flex items-center gap-2">
+                      <Layers className="w-4 h-4 text-gray-500" />
+                      Resumen por categoría
+                    </CardTitle>
+                    <p className="text-[11px] text-gray-400">Click en una fila para ver los productos de esa categoría.</p>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-gray-100 bg-gray-50">
+                          <th className="text-left px-4 py-2 text-[11px] text-gray-400 font-medium w-48">Categoría</th>
+                          <th className="text-center px-3 py-2 text-[11px] text-gray-400 font-medium">SKUs</th>
+                          <th className="text-center px-3 py-2 text-[11px] text-red-500 font-bold">PELIGRO</th>
+                          <th className="text-center px-3 py-2 text-[11px] text-green-600 font-bold">CONFORT</th>
+                          <th className="text-center px-3 py-2 text-[11px] text-yellow-600 font-bold">OPORTUNIDAD</th>
+                          <th className="text-center px-3 py-2 text-[11px] text-orange-600 font-bold">Contenedor</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {categorySummary.map(cat => (
+                          <Fragment key={cat.category}>
+                            <tr
+                              className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition-colors"
+                              onClick={() => setExpandedCatInTable(expandedCatInTable === cat.category ? null : cat.category)}
+                            >
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <ChevronRight className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-150 ${expandedCatInTable === cat.category ? "rotate-90" : ""}`} />
+                                  <span className="text-xs font-semibold text-gray-700">{cat.category}</span>
+                                </div>
+                              </td>
+                              <td className="text-center px-3 py-3 text-xs text-gray-500">{cat.total}</td>
+                              <td className="text-center px-3 py-3 text-sm font-bold text-red-600">{cat.peligro > 0 ? cat.peligro : <span className="text-gray-200">—</span>}</td>
+                              <td className="text-center px-3 py-3 text-sm font-bold text-green-600">{cat.confort > 0 ? cat.confort : <span className="text-gray-200">—</span>}</td>
+                              <td className="text-center px-3 py-3 text-sm font-bold text-yellow-600">{cat.oportunidad > 0 ? cat.oportunidad : <span className="text-gray-200">—</span>}</td>
+                              <td className="text-center px-3 py-3 text-sm font-bold text-orange-600">{cat.entranContenedor > 0 ? cat.entranContenedor : <span className="text-gray-200">—</span>}</td>
+                            </tr>
+                            {expandedCatInTable === cat.category && (
+                              <tr key={cat.category + "_exp"}>
+                                <td colSpan={6} className="px-4 py-3 bg-gray-50 border-b border-gray-100">
+                                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1.5">
+                                    {supplies
+                                      .filter(s => s.category === cat.category)
+                                      .map(s => {
+                                        const inv = invMap[s.id];
+                                        const zona = inv?.zona;
+                                        const dotCls = zona === "PELIGRO" ? "bg-red-500" : zona === "CONFORT" ? "bg-green-500" : zona === "OPORTUNIDAD" ? "bg-yellow-400" : "bg-gray-300";
+                                        const borderCls = zona === "PELIGRO" ? "border-l-red-400" : zona === "CONFORT" ? "border-l-green-400" : zona === "OPORTUNIDAD" ? "border-l-yellow-400" : "border-l-gray-200";
+                                        const doh = inv?.doh === 9999 ? "∞" : inv?.doh != null ? `${inv.doh}d` : "—";
+                                        return (
+                                          <button
+                                            key={s.id}
+                                            onClick={() => { setSelectedItem(s.id); setSearchTerm(s.name); setExpandedCatInTable(null); }}
+                                            className={`text-left p-2 bg-white rounded-lg border border-gray-100 border-l-2 ${borderCls} hover:shadow-sm transition-all ${selectedItem === s.id ? "ring-1 ring-orange-400 bg-orange-50" : ""}`}
+                                          >
+                                            <div className="flex items-center gap-1.5 mb-0.5">
+                                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}`} />
+                                              <span className="font-mono text-[9px] text-gray-400">{s.id}</span>
+                                            </div>
+                                            <p className="text-[10px] font-semibold text-gray-700 leading-tight truncate">{s.name.substring(0, 26)}</p>
+                                            <p className="text-[9px] text-gray-400 mt-0.5">
+                                              {zona ?? "—"} · {doh}
+                                              {inv?.entra_contenedor && <span className="text-orange-600 ml-1 font-bold">+OC</span>}
+                                            </p>
+                                          </button>
+                                        );
+                                      })}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        ))}
+                      </tbody>
+                    </table>
+                  </CardContent>
+                </Card>
+              )}
+
             </div>
           </TabsContent>
 
