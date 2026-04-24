@@ -114,6 +114,19 @@ export default function Performance() {
       .catch(e => { setError(String(e)); setLoading(false); });
   }, []);
 
+  // Hooks siempre antes de cualquier return condicional
+  const categories = useMemo(() =>
+    data ? [...new Set(data.skuDetails.map(s => s.category))].sort() : [],
+  [data]);
+
+  const filteredSkus = useMemo(() => {
+    if (!data) return [];
+    let list = selectedCategory ? data.skuDetails.filter(s => s.category === selectedCategory) : data.skuDetails;
+    if (skuFilter.trim())
+      list = list.filter(s => s.id.includes(skuFilter) || s.name.toLowerCase().includes(skuFilter.toLowerCase()));
+    return list;
+  }, [data, selectedCategory, skuFilter]);
+
   if (loading) return (
     <div className="flex flex-col items-center justify-center h-72 gap-3 text-gray-400">
       <Loader2 className="w-8 h-8 animate-spin text-orange-500" />
@@ -129,19 +142,6 @@ export default function Performance() {
     resumenPorTipo, top10FallosGraves, top10Sobreestimaciones,
     skuCount, cutoff, monthlyTimeSeries, skuDetails, skuTimeSeries,
   } = data;
-
-  // Categorías únicas ordenadas
-  const categories = useMemo(() =>
-    [...new Set(skuDetails.map(s => s.category))].sort(),
-  [skuDetails]);
-
-  // SKUs filtrados por categoría + texto (usados en slicer y dropdown inline)
-  const filteredSkus = useMemo(() => {
-    let list = selectedCategory ? skuDetails.filter(s => s.category === selectedCategory) : skuDetails;
-    if (skuFilter.trim())
-      list = list.filter(s => s.id.includes(skuFilter) || s.name.toLowerCase().includes(skuFilter.toLowerCase()));
-    return list;
-  }, [skuDetails, selectedCategory, skuFilter]);
 
   const selectedSku   = skuDetails.find(s => s.id === selectedSkuId) ?? null;
   const chartData     = selectedSkuId && skuTimeSeries[selectedSkuId] ? skuTimeSeries[selectedSkuId] : monthlyTimeSeries;
