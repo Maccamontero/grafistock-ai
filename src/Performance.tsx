@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { AlertTriangle, TrendingUp, Target, Loader2, CheckCircle2, TrendingDown } from "lucide-react";
+import { AlertTriangle, TrendingUp, Target, Loader2, CheckCircle2, TrendingDown, ChevronDown, X } from "lucide-react";
 import {
   ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
@@ -13,7 +13,7 @@ interface ConfusionMatrix {
 }
 
 interface SKUPerf {
-  id: string; name: string; tipo: string;
+  id: string; name: string; category: string; tipo: string;
   zonaModelo: string; sugeridoModelo: number; runrateModelo: number;
   demandaReal2025: number; mesesStockout2025: number; quiebreReal: boolean;
   coberturaReal: number; errorRunrate: number; capitalExceso: number;
@@ -99,11 +99,13 @@ function SKURow({ s, highlight, onSelect }: { s: SKUPerf; highlight: "danger" | 
 }
 
 export default function Performance() {
-  const [data, setData]           = useState<PerformanceReport | null>(null);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState<string | null>(null);
+  const [data, setData]                   = useState<PerformanceReport | null>(null);
+  const [loading, setLoading]             = useState(true);
+  const [error, setError]                 = useState<string | null>(null);
   const [selectedSkuId, setSelectedSkuId] = useState<string>("");
-  const [skuFilter, setSkuFilter] = useState<string>("");
+  const [skuFilter, setSkuFilter]         = useState<string>("");
+  const [selectedCategory, setSelectedCategory] = useState<string>("");
+  const [slicerOpen, setSlicerOpen]       = useState(false);
 
   useEffect(() => {
     fetch("/api/performance")
@@ -122,20 +124,40 @@ export default function Performance() {
     <div className="p-6 text-red-500 text-sm">Error al cargar el reporte: {error ?? "Sin datos"}</div>
   );
 
-  const { confusionMatrix: cm, kpi1ErrorCritico, kpi2Cobertura, kpi3ErrorRunrate, resumenPorTipo, top10FallosGraves, top10Sobreestimaciones, skuCount, cutoff, monthlyTimeSeries, skuDetails, skuTimeSeries } = data;
+  const {
+    confusionMatrix: cm, kpi1ErrorCritico, kpi2Cobertura, kpi3ErrorRunrate,
+    resumenPorTipo, top10FallosGraves, top10Sobreestimaciones,
+    skuCount, cutoff, monthlyTimeSeries, skuDetails, skuTimeSeries,
+  } = data;
 
-  const selectedSku    = skuDetails.find(s => s.id === selectedSkuId) ?? null;
-  const chartData      = selectedSkuId && skuTimeSeries[selectedSkuId] ? skuTimeSeries[selectedSkuId] : monthlyTimeSeries;
-  const filteredSkus   = skuFilter.trim()
-    ? skuDetails.filter(s => s.id.includes(skuFilter) || s.name.toLowerCase().includes(skuFilter.toLowerCase()))
-    : skuDetails;
-  const chartBandData  = chartData.map(d => ({ ...d, bandBase: d.p50, bandWidth: d.p90 - d.p50 }));
-  const kpi1Ok = kpi1ErrorCritico < 10;
+  // Categorías únicas ordenadas
+  const categories = useMemo(() =>
+    [...new Set(skuDetails.map(s => s.category))].sort(),
+  [skuDetails]);
+
+  // SKUs filtrados por categoría + texto (usados en slicer y dropdown inline)
+  const filteredSkus = useMemo(() => {
+    let list = selectedCategory ? skuDetails.filter(s => s.category === selectedCategory) : skuDetails;
+    if (skuFilter.trim())
+      list = list.filter(s => s.id.includes(skuFilter) || s.name.toLowerCase().includes(skuFilter.toLowerCase()));
+    return list;
+  }, [skuDetails, selectedCategory, skuFilter]);
+
+  const selectedSku   = skuDetails.find(s => s.id === selectedSkuId) ?? null;
+  const chartData     = selectedSkuId && skuTimeSeries[selectedSkuId] ? skuTimeSeries[selectedSkuId] : monthlyTimeSeries;
+  const chartBandData = chartData.map(d => ({ ...d, bandBase: d.p50, bandWidth: d.p90 - d.p50 }));
+  const kpi1Ok        = kpi1ErrorCritico < 10;
+
+  function selectSku(id: string) {
+    setSelectedSkuId(id);
+    setSkuFilter("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   return (
     <div className="space-y-6 max-w-[1400px] mx-auto">
 
-      {/* Header */}
+      {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-bold text-gray-800">Performance del Modelo</h2>
@@ -150,6 +172,126 @@ export default function Performance() {
         </div>
       </div>
 
+      {/* ── Filtros: categoría + slicer desplegable ── */}
+      <div className="space-y-3">
+
+        {/* Pills de categoría */}
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-[11px] text-gray-400 font-medium">Categoría:</span>
+          <button
+            onClick={() => { setSelectedCategory(""); setSelectedSkuId(""); }}
+            className={`text-[11px] px-3 py-1 rounded-full font-semibold border transition-colors ${
+              !selectedCategory
+                ? "bg-gray-800 text-white border-gray-800"
+                : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
+            }`}
+          >
+            Todas ({skuCount})
+          </button>
+          {categories.map(cat => {
+            const count = skuDetails.filter(s => s.category === cat).length;
+            const active = selectedCategory === cat;
+            return (
+              <button
+                key={cat}
+                onClick={() => { setSelectedCategory(active ? "" : cat); setSelectedSkuId(""); }}
+                className={`text-[11px] px-3 py-1 rounded-full font-semibold border transition-colors ${
+                  active
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "bg-white text-gray-600 border-gray-200 hover:border-blue-300 hover:text-blue-600"
+                }`}
+              >
+                {cat} ({count})
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Slicer vertical desplegable */}
+        <div className="border border-gray-200 rounded-xl overflow-hidden bg-white shadow-sm">
+          <button
+            onClick={() => setSlicerOpen(!slicerOpen)}
+            className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-gray-700">
+                Explorar productos
+              </span>
+              <span className="text-[11px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-bold">
+                {selectedCategory
+                  ? skuDetails.filter(s => s.category === selectedCategory).length
+                  : skuCount} SKUs
+              </span>
+              {selectedSkuId && (
+                <span className="text-[11px] bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-bold">
+                  Activo: {selectedSkuId}
+                </span>
+              )}
+            </div>
+            <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${slicerOpen ? "rotate-180" : ""}`} />
+          </button>
+
+          {slicerOpen && (
+            <div className="border-t border-gray-100">
+              {/* Buscador interno */}
+              <div className="px-3 pt-3 pb-2">
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={skuFilter}
+                    onChange={e => setSkuFilter(e.target.value)}
+                    placeholder="Buscar por código o descripción…"
+                    className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 pr-8 outline-none focus:ring-1 focus:ring-blue-300 bg-gray-50"
+                    autoFocus
+                  />
+                  {skuFilter && (
+                    <button
+                      onClick={() => setSkuFilter("")}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-600"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1.5">{filteredSkus.length} productos encontrados · click para ver en el gráfico</p>
+              </div>
+
+              {/* Grid de tarjetas SKU */}
+              <div className="px-3 pb-3 max-h-64 overflow-y-auto">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1.5">
+                  {filteredSkus.slice(0, 100).map(s => {
+                    const isSelected = selectedSkuId === s.id;
+                    const zonaColor = s.zonaModelo === "PELIGRO" ? "border-l-red-400" : s.zonaModelo === "CONFORT" ? "border-l-green-400" : "border-l-yellow-400";
+                    return (
+                      <button
+                        key={s.id}
+                        onClick={() => setSelectedSkuId(isSelected ? "" : s.id)}
+                        className={`text-left p-2 rounded-lg border-l-2 border border-gray-100 text-[10px] transition-all ${zonaColor} ${
+                          isSelected
+                            ? "bg-blue-50 border-blue-200 ring-1 ring-blue-400"
+                            : "bg-white hover:bg-gray-50 hover:border-gray-200"
+                        }`}
+                      >
+                        <p className="font-mono text-gray-400 text-[9px]">{s.id}</p>
+                        <p className="font-semibold text-gray-700 leading-tight mt-0.5 line-clamp-2">{s.name.substring(0, 28)}</p>
+                        <div className="flex gap-1 mt-1 flex-wrap">
+                          <TipoBadge tipo={s.tipo} />
+                        </div>
+                      </button>
+                    );
+                  })}
+                  {filteredSkus.length > 100 && (
+                    <div className="col-span-full text-center text-[10px] text-gray-400 py-2">
+                      Mostrando 100 de {filteredSkus.length} — refina la búsqueda
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* ── Gráfico: Proyectado en banda vs Ejecutado ── */}
       <Card className="border-gray-200 shadow-sm">
         <CardHeader className="pb-3">
@@ -157,57 +299,22 @@ export default function Performance() {
             <div className="min-w-0">
               <CardTitle className="text-sm font-bold">
                 {selectedSku
-                  ? <><span className="font-mono text-gray-400 mr-1.5">{selectedSku.id}</span>{selectedSku.name.substring(0, 45)}</>
-                  : "Proyectado vs Ejecutado — Portafolio completo 2025"}
+                  ? <><span className="font-mono text-gray-400 mr-1.5">{selectedSku.id}</span>{selectedSku.name.substring(0, 50)}</>
+                  : `Proyectado vs Ejecutado — ${selectedCategory ? selectedCategory : "Portafolio completo"} 2025`}
               </CardTitle>
               <p className="text-[11px] text-gray-400 mt-0.5">
                 {selectedSku
-                  ? <>Tipo: <strong className="text-gray-600">{selectedSku.tipo}</strong> · Zona modelo: <strong className="text-gray-600">{selectedSku.zonaModelo}</strong> · Banda azul = corredor P50–P90 congelado dic-2024</>
+                  ? <>Tipo: <strong className="text-gray-600">{selectedSku.tipo}</strong> · Categoría: <strong className="text-gray-600">{selectedSku.category}</strong> · Zona modelo: <strong className="text-gray-600">{selectedSku.zonaModelo}</strong></>
                   : "Banda azul = corredor P50–P90 del pipeline congelado dic-2024. Línea naranja = demanda real mes a mes."}
               </p>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {selectedSkuId && (
-                <button
-                  onClick={() => { setSelectedSkuId(""); setSkuFilter(""); }}
-                  className="text-[11px] text-gray-500 hover:text-gray-800 underline"
-                >
-                  ← Portafolio
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Buscador de SKU */}
-          <div className="mt-3 relative">
-            <input
-              type="text"
-              value={skuFilter}
-              onChange={e => setSkuFilter(e.target.value)}
-              placeholder="Buscar SKU por código o descripción…"
-              className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-blue-300 bg-gray-50"
-            />
-            {skuFilter.trim() && filteredSkus.length > 0 && (
-              <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto">
-                {filteredSkus.slice(0, 40).map(s => (
-                  <button
-                    key={s.id}
-                    className="w-full text-left px-3 py-2 text-[11px] hover:bg-blue-50 flex items-center gap-2 border-b border-gray-50 last:border-0"
-                    onClick={() => { setSelectedSkuId(s.id); setSkuFilter(""); }}
-                  >
-                    <span className="font-mono text-gray-400 shrink-0">{s.id}</span>
-                    <span className="truncate text-gray-700">{s.name}</span>
-                    <span className="ml-auto shrink-0">
-                      <TipoBadge tipo={s.tipo} />
-                    </span>
-                  </button>
-                ))}
-                {filteredSkus.length > 40 && (
-                  <p className="text-[10px] text-gray-400 px-3 py-1.5 text-center">
-                    {filteredSkus.length - 40} más — refina la búsqueda
-                  </p>
-                )}
-              </div>
+            {selectedSkuId && (
+              <button
+                onClick={() => setSelectedSkuId("")}
+                className="text-[11px] text-gray-500 hover:text-gray-800 underline shrink-0"
+              >
+                ← Portafolio
+              </button>
             )}
           </div>
         </CardHeader>
@@ -251,7 +358,6 @@ export default function Performance() {
       {/* ── Sección 1: KPI Cards ── */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 
-        {/* KPI 1 */}
         <Card className={`border-2 shadow-sm ${kpi1Ok ? "border-green-300 bg-green-50" : "border-red-300 bg-red-50"}`}>
           <CardContent className="pt-5">
             <div className="flex items-start justify-between">
@@ -272,7 +378,6 @@ export default function Performance() {
           </CardContent>
         </Card>
 
-        {/* KPI 2 */}
         <Card className="border-gray-200 shadow-sm">
           <CardContent className="pt-5">
             <div className="flex items-start justify-between">
@@ -295,7 +400,6 @@ export default function Performance() {
           </CardContent>
         </Card>
 
-        {/* KPI 3 */}
         <Card className="border-gray-200 shadow-sm">
           <CardContent className="pt-5">
             <div className="flex items-start justify-between">
@@ -320,7 +424,6 @@ export default function Performance() {
       {/* ── Sección 2: Matriz de confusión + resumen por tipo ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
-        {/* Confusion Matrix */}
         <Card className="border-gray-200 shadow-sm">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-bold">Matriz de Confusión — Zonas</CardTitle>
@@ -344,9 +447,7 @@ export default function Performance() {
                   const isGoodHit  = zona === "PELIGRO"  && row.quebro > 0;
                   return (
                     <tr key={zona}>
-                      <td className="py-4">
-                        <ZonaBadge zona={zona} />
-                      </td>
+                      <td className="py-4"><ZonaBadge zona={zona} /></td>
                       <td className={`text-center py-4 text-2xl font-bold rounded-sm ${
                         isCritical ? "text-red-600 bg-red-50" : isGoodHit ? "text-green-600 bg-green-50" : "text-gray-300"
                       }`}>
@@ -379,7 +480,6 @@ export default function Performance() {
           </CardContent>
         </Card>
 
-        {/* Resumen por tipo */}
         <Card className="border-gray-200 shadow-sm">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-bold">Resumen Ejecutivo por Tipo de Demanda</CardTitle>
@@ -419,7 +519,6 @@ export default function Performance() {
       {/* ── Sección 3: Top 10 tablas ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
-        {/* Fallos graves */}
         <Card className="border-red-200 shadow-sm">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-bold text-red-700 flex items-center gap-2">
@@ -436,13 +535,12 @@ export default function Performance() {
               </div>
             ) : (
               <div className="space-y-2">
-                {top10FallosGraves.map(s => <SKURow key={s.id} s={s} highlight="danger" onSelect={id => { setSelectedSkuId(id); window.scrollTo({ top: 0, behavior: "smooth" }); }} />)}
+                {top10FallosGraves.map(s => <SKURow key={s.id} s={s} highlight="danger" onSelect={selectSku} />)}
               </div>
             )}
           </CardContent>
         </Card>
 
-        {/* Sobreestimaciones */}
         <Card className="border-yellow-200 shadow-sm">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-bold text-yellow-700 flex items-center gap-2">
@@ -453,7 +551,7 @@ export default function Performance() {
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {top10Sobreestimaciones.map(s => <SKURow key={s.id} s={s} highlight="excess" onSelect={id => { setSelectedSkuId(id); window.scrollTo({ top: 0, behavior: "smooth" }); }} />)}
+              {top10Sobreestimaciones.map(s => <SKURow key={s.id} s={s} highlight="excess" onSelect={selectSku} />)}
             </div>
           </CardContent>
         </Card>

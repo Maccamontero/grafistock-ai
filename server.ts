@@ -1700,7 +1700,7 @@ function buildPerformanceReport() {
 
   // ── Comparación ──────────────────────────────────────────────────────────
   interface SKUPerf {
-    id:string; name:string; tipo:string; zonaModelo:string; sugeridoModelo:number; runrateModelo:number;
+    id:string; name:string; category:string; tipo:string; zonaModelo:string; sugeridoModelo:number; runrateModelo:number;
     demandaReal2025:number; demandaRealMensual:number; mesesStockout2025:number; quiebreReal:boolean;
     coberturaReal:number; errorRunrate:number; capitalExceso:number; gravedad:string;
   }
@@ -1720,7 +1720,7 @@ function buildPerformanceReport() {
     else if(zona==="PELIGRO"&&!quiebre) gravedad="CONSERVADOR";
     else if(zona!=="PELIGRO"&&quiebre) gravedad="CRITICO";
     else gravedad="ACIERTO";
-    details.push({id,name:v.name,tipo,zonaModelo:zona,sugeridoModelo:sug,runrateModelo:rrE,demandaReal2025:demReal,demandaRealMensual:drM,mesesStockout2025:moSO,quiebreReal:quiebre,coberturaReal:Number(cob.toFixed(3)),errorRunrate:Number(errRR.toFixed(1)),capitalExceso:capExc,gravedad});
+    details.push({id,name:v.name,category:v.category,tipo,zonaModelo:zona,sugeridoModelo:sug,runrateModelo:rrE,demandaReal2025:demReal,demandaRealMensual:drM,mesesStockout2025:moSO,quiebreReal:quiebre,coberturaReal:Number(cob.toFixed(3)),errorRunrate:Number(errRR.toFixed(1)),capitalExceso:capExc,gravedad});
   }
 
   // ── Métricas ─────────────────────────────────────────────────────────────
