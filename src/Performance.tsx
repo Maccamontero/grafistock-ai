@@ -43,6 +43,8 @@ interface PerformanceReport {
   top10Sobreestimaciones: SKUPerf[];
   resumenPorTipo: TipoResumen[];
   monthlyTimeSeries: MonthPoint[];
+  skuDetails: SKUPerf[];
+  skuTimeSeries: Record<string, MonthPoint[]>;
 }
 
 function TipoBadge({ tipo }: { tipo: string }) {
@@ -63,10 +65,14 @@ function ZonaBadge({ zona }: { zona: string }) {
   return <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${cls}`}>{zona}</span>;
 }
 
-function SKURow({ s, highlight }: { s: SKUPerf; highlight: "danger" | "excess" }) {
+function SKURow({ s, highlight, onSelect }: { s: SKUPerf; highlight: "danger" | "excess"; onSelect: (id: string) => void }) {
   const bg = highlight === "danger" ? "bg-red-50 border-red-100" : "bg-yellow-50 border-yellow-100";
   return (
-    <div className={`p-2.5 rounded-lg border ${bg}`}>
+    <div
+      className={`p-2.5 rounded-lg border ${bg} cursor-pointer hover:ring-1 hover:ring-blue-300 transition-shadow`}
+      onClick={() => onSelect(s.id)}
+      title="Ver gráfico de este SKU"
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="text-xs font-bold text-gray-800 truncate">
@@ -93,9 +99,11 @@ function SKURow({ s, highlight }: { s: SKUPerf; highlight: "danger" | "excess" }
 }
 
 export default function Performance() {
-  const [data, setData]       = useState<PerformanceReport | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState<string | null>(null);
+  const [data, setData]           = useState<PerformanceReport | null>(null);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState<string | null>(null);
+  const [selectedSkuId, setSelectedSkuId] = useState<string>("");
+  const [skuFilter, setSkuFilter] = useState<string>("");
 
   useEffect(() => {
     fetch("/api/performance")
@@ -114,7 +122,14 @@ export default function Performance() {
     <div className="p-6 text-red-500 text-sm">Error al cargar el reporte: {error ?? "Sin datos"}</div>
   );
 
-  const { confusionMatrix: cm, kpi1ErrorCritico, kpi2Cobertura, kpi3ErrorRunrate, resumenPorTipo, top10FallosGraves, top10Sobreestimaciones, skuCount, cutoff, monthlyTimeSeries } = data;
+  const { confusionMatrix: cm, kpi1ErrorCritico, kpi2Cobertura, kpi3ErrorRunrate, resumenPorTipo, top10FallosGraves, top10Sobreestimaciones, skuCount, cutoff, monthlyTimeSeries, skuDetails, skuTimeSeries } = data;
+
+  const selectedSku    = skuDetails.find(s => s.id === selectedSkuId) ?? null;
+  const chartData      = selectedSkuId && skuTimeSeries[selectedSkuId] ? skuTimeSeries[selectedSkuId] : monthlyTimeSeries;
+  const filteredSkus   = skuFilter.trim()
+    ? skuDetails.filter(s => s.id.includes(skuFilter) || s.name.toLowerCase().includes(skuFilter.toLowerCase()))
+    : skuDetails;
+  const chartBandData  = chartData.map(d => ({ ...d, bandBase: d.p50, bandWidth: d.p90 - d.p50 }));
   const kpi1Ok = kpi1ErrorCritico < 10;
 
   return (
@@ -137,23 +152,76 @@ export default function Performance() {
 
       {/* ── Gráfico: Proyectado en banda vs Ejecutado ── */}
       <Card className="border-gray-200 shadow-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-bold">Proyectado vs Ejecutado — Demanda portafolio 2025</CardTitle>
-          <p className="text-[11px] text-gray-400">
-            Banda azul = corredor P50–P90 del pipeline congelado dic-2024.
-            Línea naranja = demanda real acumulada del portafolio mes a mes.
-          </p>
+        <CardHeader className="pb-3">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="min-w-0">
+              <CardTitle className="text-sm font-bold">
+                {selectedSku
+                  ? <><span className="font-mono text-gray-400 mr-1.5">{selectedSku.id}</span>{selectedSku.name.substring(0, 45)}</>
+                  : "Proyectado vs Ejecutado — Portafolio completo 2025"}
+              </CardTitle>
+              <p className="text-[11px] text-gray-400 mt-0.5">
+                {selectedSku
+                  ? <>Tipo: <strong className="text-gray-600">{selectedSku.tipo}</strong> · Zona modelo: <strong className="text-gray-600">{selectedSku.zonaModelo}</strong> · Banda azul = corredor P50–P90 congelado dic-2024</>
+                  : "Banda azul = corredor P50–P90 del pipeline congelado dic-2024. Línea naranja = demanda real mes a mes."}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {selectedSkuId && (
+                <button
+                  onClick={() => { setSelectedSkuId(""); setSkuFilter(""); }}
+                  className="text-[11px] text-gray-500 hover:text-gray-800 underline"
+                >
+                  ← Portafolio
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Buscador de SKU */}
+          <div className="mt-3 relative">
+            <input
+              type="text"
+              value={skuFilter}
+              onChange={e => setSkuFilter(e.target.value)}
+              placeholder="Buscar SKU por código o descripción…"
+              className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-blue-300 bg-gray-50"
+            />
+            {skuFilter.trim() && filteredSkus.length > 0 && (
+              <div className="absolute z-20 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto">
+                {filteredSkus.slice(0, 40).map(s => (
+                  <button
+                    key={s.id}
+                    className="w-full text-left px-3 py-2 text-[11px] hover:bg-blue-50 flex items-center gap-2 border-b border-gray-50 last:border-0"
+                    onClick={() => { setSelectedSkuId(s.id); setSkuFilter(""); }}
+                  >
+                    <span className="font-mono text-gray-400 shrink-0">{s.id}</span>
+                    <span className="truncate text-gray-700">{s.name}</span>
+                    <span className="ml-auto shrink-0">
+                      <TipoBadge tipo={s.tipo} />
+                    </span>
+                  </button>
+                ))}
+                {filteredSkus.length > 40 && (
+                  <p className="text-[10px] text-gray-400 px-3 py-1.5 text-center">
+                    {filteredSkus.length - 40} más — refina la búsqueda
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
         </CardHeader>
+
         <CardContent>
           <ResponsiveContainer width="100%" height={280}>
-            <ComposedChart data={monthlyTimeSeries.map(d => ({
-              ...d,
-              bandBase: d.p50,
-              bandWidth: d.p90 - d.p50,
-            }))} margin={{ top: 8, right: 24, left: 0, bottom: 0 }}>
+            <ComposedChart data={chartBandData} margin={{ top: 8, right: 24, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="mes" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}k` : String(v)} width={40} />
+              <YAxis
+                tick={{ fontSize: 11 }}
+                tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(1)}k` : String(v)}
+                width={44}
+              />
               <Tooltip
                 formatter={(value: number, name: string) => {
                   if (name === "bandBase") return null;
@@ -168,20 +236,12 @@ export default function Performance() {
                 contentStyle={{ fontSize: 11 }}
               />
               <Legend
-                formatter={name => ({
-                  bandWidth: "Corredor P50–P90",
-                  p75: "Proyectado P75",
-                  demandaReal: "Ejecutado real",
-                }[name] ?? name)}
+                formatter={name => ({ bandWidth: "Corredor P50–P90", p75: "Proyectado P75", demandaReal: "Ejecutado real" }[name] ?? name)}
                 wrapperStyle={{ fontSize: 11 }}
               />
-              {/* Banda invisible (base del stack) */}
               <Area dataKey="bandBase" stackId="band" stroke="none" fill="none" legendType="none" />
-              {/* Banda visible P50→P90 */}
               <Area dataKey="bandWidth" stackId="band" stroke="none" fill="#93C5FD" fillOpacity={0.35} name="bandWidth" />
-              {/* Línea P75 proyectada */}
               <Line dataKey="p75" stroke="#3B82F6" strokeWidth={1.5} strokeDasharray="5 3" dot={false} name="p75" />
-              {/* Línea ejecutado real */}
               <Line dataKey="demandaReal" stroke="#EA580C" strokeWidth={2.5} dot={{ r: 3, fill: "#EA580C" }} activeDot={{ r: 5 }} name="demandaReal" />
             </ComposedChart>
           </ResponsiveContainer>
@@ -376,7 +436,7 @@ export default function Performance() {
               </div>
             ) : (
               <div className="space-y-2">
-                {top10FallosGraves.map(s => <SKURow key={s.id} s={s} highlight="danger" />)}
+                {top10FallosGraves.map(s => <SKURow key={s.id} s={s} highlight="danger" onSelect={id => { setSelectedSkuId(id); window.scrollTo({ top: 0, behavior: "smooth" }); }} />)}
               </div>
             )}
           </CardContent>
@@ -393,7 +453,7 @@ export default function Performance() {
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {top10Sobreestimaciones.map(s => <SKURow key={s.id} s={s} highlight="excess" />)}
+              {top10Sobreestimaciones.map(s => <SKURow key={s.id} s={s} highlight="excess" onSelect={id => { setSelectedSkuId(id); window.scrollTo({ top: 0, behavior: "smooth" }); }} />)}
             </div>
           </CardContent>
         </Card>
