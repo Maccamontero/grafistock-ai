@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { AlertTriangle, TrendingUp, Target, Loader2, CheckCircle2, TrendingDown, ChevronDown, X } from "lucide-react";
+import { AlertTriangle, Target, Loader2, TrendingDown, ChevronDown, X } from "lucide-react";
 import {
   ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
@@ -65,39 +65,6 @@ function ZonaBadge({ zona }: { zona: string }) {
   return <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${cls}`}>{zona}</span>;
 }
 
-function SKURow({ s, highlight, onSelect }: { s: SKUPerf; highlight: "danger" | "excess"; onSelect: (id: string) => void }) {
-  const bg = highlight === "danger" ? "bg-red-50 border-red-100" : "bg-yellow-50 border-yellow-100";
-  return (
-    <div
-      className={`p-2.5 rounded-lg border ${bg} cursor-pointer hover:ring-1 hover:ring-blue-300 transition-shadow`}
-      onClick={() => onSelect(s.id)}
-      title="Ver gráfico de este SKU"
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-xs font-bold text-gray-800 truncate">
-            <span className="font-mono text-gray-500 mr-1.5">{s.id}</span>
-            {s.name.substring(0, 30)}
-          </p>
-          <div className="flex gap-1.5 mt-1 flex-wrap">
-            <TipoBadge tipo={s.tipo} />
-            <ZonaBadge zona={s.zonaModelo} />
-            {s.mesesStockout2025 > 0 && (
-              <span className="text-[10px] text-red-600 font-semibold">{s.mesesStockout2025}m stockout</span>
-            )}
-          </div>
-        </div>
-        <div className="text-right text-[10px] text-gray-500 shrink-0 space-y-0.5">
-          <p>Sug: <strong className="text-gray-700">{s.sugeridoModelo.toLocaleString()}</strong></p>
-          <p>Real 2025: <strong className={highlight === "danger" ? "text-red-600" : "text-gray-700"}>{s.demandaReal2025.toLocaleString()}</strong></p>
-          {highlight === "danger" && <p>Err RR: <strong>{s.errorRunrate.toFixed(0)}%</strong></p>}
-          {highlight === "excess"  && <p>Exceso: <strong className="text-yellow-700">+{s.capitalExceso.toLocaleString()}</strong></p>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function Performance() {
   const [data, setData]                   = useState<PerformanceReport | null>(null);
   const [loading, setLoading]             = useState(true);
@@ -139,7 +106,7 @@ export default function Performance() {
 
   const {
     confusionMatrix: cm, kpi1ErrorCritico, kpi2Cobertura, kpi3ErrorRunrate,
-    resumenPorTipo, top10FallosGraves, top10Sobreestimaciones,
+    resumenPorTipo,
     skuCount, cutoff, monthlyTimeSeries, skuDetails, skuTimeSeries,
   } = data;
 
@@ -512,47 +479,6 @@ export default function Performance() {
                 ))}
               </tbody>
             </table>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── Sección 3: Top 10 tablas ── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-
-        <Card className="border-red-200 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-bold text-red-700 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4" />
-              Top {top10FallosGraves.length} Fallos Graves
-            </CardTitle>
-            <p className="text-[11px] text-gray-400">Modelo predijo CONFORT/OPORTUNIDAD → SKU tuvo ≥2 meses en stockout</p>
-          </CardHeader>
-          <CardContent>
-            {top10FallosGraves.length === 0 ? (
-              <div className="flex items-center gap-2 text-green-600 py-4">
-                <CheckCircle2 className="w-5 h-5" />
-                <p className="text-sm font-semibold">Sin fallos graves en 2025</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {top10FallosGraves.map(s => <SKURow key={s.id} s={s} highlight="danger" onSelect={selectSku} />)}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="border-yellow-200 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-bold text-yellow-700 flex items-center gap-2">
-              <TrendingUp className="w-4 h-4" />
-              Top {top10Sobreestimaciones.length} Sobreestimaciones
-            </CardTitle>
-            <p className="text-[11px] text-gray-400">Capital inmovilizado: sugerido excedió la demanda real de 2025</p>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {top10Sobreestimaciones.map(s => <SKURow key={s.id} s={s} highlight="excess" onSelect={selectSku} />)}
-            </div>
           </CardContent>
         </Card>
       </div>

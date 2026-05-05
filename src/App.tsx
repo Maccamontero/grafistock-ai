@@ -572,9 +572,14 @@ export default function App() {
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                                   {catItems.map(({ supply, inv }) => {
                                     const zona = inv?.zona;
-                                    const borderCls = zona === "PELIGRO" ? "border-l-red-400" : zona === "CONFORT" ? "border-l-green-400" : "border-l-yellow-400";
-                                    const zonaBg   = zona === "PELIGRO" ? "bg-red-50"   : zona === "CONFORT" ? "bg-green-50"  : "bg-yellow-50";
-                                    const zonaText = zona === "PELIGRO" ? "text-red-700" : zona === "CONFORT" ? "text-green-700" : "text-yellow-700";
+                                    const motivo: "PELIGRO" | "CONTENEDOR" | "PRECIO" =
+                                      zona === "PELIGRO" ? "PELIGRO"
+                                      : inv?.entra_contenedor ? "CONTENEDOR"
+                                      : "PRECIO";
+                                    const borderCls = motivo === "PELIGRO" ? "border-l-red-400"  : motivo === "CONTENEDOR" ? "border-l-orange-400" : "border-l-yellow-400";
+                                    const badgeBg   = motivo === "PELIGRO" ? "bg-red-50"         : motivo === "CONTENEDOR" ? "bg-orange-50"        : "bg-yellow-50";
+                                    const badgeText = motivo === "PELIGRO" ? "text-red-700"      : motivo === "CONTENEDOR" ? "text-orange-700"     : "text-yellow-700";
+                                    const badgeLabel = motivo === "PELIGRO" ? "PELIGRO"          : motivo === "CONTENEDOR" ? `${zona} · EN OC`     : "REVISAR PRECIO";
                                     return (
                                       <button
                                         key={supply.id}
@@ -586,7 +591,7 @@ export default function App() {
                                             <p className="text-xs font-bold text-gray-800 truncate">{supply.name.substring(0, 38)}</p>
                                             <p className="text-[9px] font-mono text-gray-400 mt-0.5">{supply.id}</p>
                                           </div>
-                                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${zonaBg} ${zonaText}`}>{zona}</span>
+                                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${badgeBg} ${badgeText}`}>{badgeLabel}</span>
                                         </div>
                                         <p className="text-[10px] text-gray-500 leading-tight">{inv ? getAnalysisText(inv) : ""}</p>
                                         {inv?.revisar_precio && (
