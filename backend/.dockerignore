@@ -1,0 +1,14 @@
+# Archivos sensibles — la API key se inyecta como env var en App Runner.
+.env
+.env.*
+!.env.example
+
+# Artefactos locales que no van en la imagen.
+node_modules
+npm-debug.log*
+*.log
+.DS_Store
+
+# Documentación y herramientas de dev que no aportan a producción.
+README.md
+.gitignore

@@ -5,6 +5,8 @@ import {
   ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
 } from "recharts";
+import { apiUrl } from "@/src/lib/api";
+import { authFetch } from "@/src/lib/auth";
 
 interface ConfusionMatrix {
   PELIGRO:     { quebro: number; noQuebro: number };
@@ -15,7 +17,7 @@ interface ConfusionMatrix {
 interface SKUPerf {
   id: string; name: string; category: string; tipo: string;
   zonaModelo: string; sugeridoModelo: number; runrateModelo: number;
-  demandaReal2025: number; mesesStockout2025: number; quiebreReal: boolean;
+  demandaReal2025: number; demandaRealMensual: number; mesesStockout2025: number; quiebreReal: boolean;
   coberturaReal: number; errorRunrate: number; capitalExceso: number;
   gravedad: string;
 }
@@ -65,6 +67,73 @@ function ZonaBadge({ zona }: { zona: string }) {
   return <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${cls}`}>{zona}</span>;
 }
 
+function tipoEnPalabras(tipo: string): string {
+  if (tipo === "CONTINUA")     return "tiene ventas regulares todos los meses";
+  if (tipo === "INTERMITENTE") return "tiene meses fuertes y meses muy flojos, no se mueve parejo";
+  if (tipo === "POR_PROYECTO") return "se vende por temporadas o pedidos puntuales, no constantemente";
+  return "tiene un comportamiento mixto";
+}
+
+function fmt(n: number): string {
+  return Math.round(n).toLocaleString("es-CO");
+}
+
+function narrativaPerformance(sku: SKUPerf): { titulo1: string; texto1: string; titulo2: string; texto2: string; titulo3: string; texto3: string } {
+  const errorPct = Math.abs(sku.errorRunrate);
+  const meses = sku.mesesStockout2025;
+  const quebro = sku.quiebreReal;
+  const zona = sku.zonaModelo;
+  const rrModelo = sku.runrateModelo;
+  const realMensual = sku.demandaRealMensual;
+  const esperabaMas = rrModelo > realMensual;
+
+  // 1. ¿Le pegó el modelo a la zona?
+  const titulo1 = "¿Le pegó el modelo a este producto?";
+  let texto1 = "";
+  if (zona === "PELIGRO" && quebro) {
+    texto1 = `El modelo te avisó a tiempo. Lo puso en zona de peligro y, efectivamente, se quedó sin stock ${meses === 1 ? "1 mes" : `${meses} meses`} en 2025. La alerta hizo su trabajo.`;
+  } else if (zona === "PELIGRO" && !quebro) {
+    texto1 = `El modelo lo puso en peligro pero al final no se quebró en 2025. Fue una alerta preventiva un poco conservadora, pero al menos no te dejó sin producto.`;
+  } else if (zona !== "PELIGRO" && quebro) {
+    texto1 = `Acá hay un fallo del modelo que vale la pena mirar: lo clasificó como ${zona} (es decir, "tranquilo, no se quiebra") y al final se quedó sin stock ${meses === 1 ? "1 mes" : `${meses} meses`}. La alerta no saltó cuando debía.`;
+  } else {
+    texto1 = `El modelo lo leyó bien: lo clasificó como ${zona} y, efectivamente, no se quebró en todo 2025. Buen acierto.`;
+  }
+
+  // 2. ¿Le pegó al ritmo mensual de venta?
+  const titulo2 = "¿Le pegó al ritmo de venta mensual?";
+  let texto2 = "";
+  if (realMensual <= 0) {
+    texto2 = `Este producto no registró ventas en 2025, así que no podemos medir qué tan bien le pegó el modelo al ritmo de venta.`;
+  } else {
+    const linea = `El modelo esperaba que vendieras unas ${fmt(rrModelo)} al mes y al final vendiste un promedio de ${fmt(realMensual)} (en total ${fmt(sku.demandaReal2025)} en el año).`;
+    if (errorPct <= 15) {
+      texto2 = `${linea} Le pegó muy bien al ritmo, casi al lugar.`;
+    } else if (errorPct <= 30) {
+      texto2 = `${linea} Esperaba ${esperabaMas ? "más" : "menos"} de lo que en realidad pasó — una diferencia del ${errorPct.toFixed(0)}%, razonable pero hay que tenerla presente.`;
+    } else {
+      texto2 = `${linea} Esperaba ${esperabaMas ? "bastante más" : "bastante menos"} de lo que pasó — una diferencia importante del ${errorPct.toFixed(0)}%.`;
+    }
+  }
+
+  // 3. Lectura general
+  const titulo3 = "Lectura general del producto";
+  const tipoFrase = tipoEnPalabras(sku.tipo);
+  let consejo = "";
+  if (zona !== "PELIGRO" && quebro) {
+    consejo = `Para este año conviene mirarlo con lupa antes de decidir cuánto comprar: el modelo no captó bien su comportamiento.`;
+  } else if (errorPct <= 20 && (zona === "PELIGRO" ? quebro : !quebro)) {
+    consejo = `Para este año puedes apoyarte tranquilo en la sugerencia del modelo, viene leyéndolo bien.`;
+  } else if (errorPct > 30) {
+    consejo = `Para este año úsalo como referencia pero compleméntalo con tu criterio del negocio, el modelo viene desviado.`;
+  } else {
+    consejo = `Para este año la sugerencia del modelo es un buen punto de partida, pero siempre conviene cruzarla con lo que sabes del cliente y la temporada.`;
+  }
+  const texto3 = `Este producto es de los que ${tipoFrase}. ${consejo}`;
+
+  return { titulo1, texto1, titulo2, texto2, titulo3, texto3 };
+}
+
 export default function Performance() {
   const [data, setData]                   = useState<PerformanceReport | null>(null);
   const [loading, setLoading]             = useState(true);
@@ -75,7 +144,7 @@ export default function Performance() {
   const [slicerOpen, setSlicerOpen]       = useState(false);
 
   useEffect(() => {
-    fetch("/api/performance")
+    authFetch(apiUrl("/api/performance"))
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(e => { setError(String(e)); setLoading(false); });
@@ -322,6 +391,41 @@ export default function Performance() {
         </CardContent>
       </Card>
 
+      {/* ── Lectura por producto (cuando hay SKU seleccionado) ── */}
+      {selectedSku && (() => {
+        const { titulo1, texto1, titulo2, texto2, titulo3, texto3 } = narrativaPerformance(selectedSku);
+        return (
+          <Card className="border-gray-200 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-bold flex items-center gap-2">
+                <Target className="w-4 h-4 text-orange-500" />
+                Lectura del modelo para este producto en 2025
+              </CardTitle>
+              <p className="text-[11px] text-gray-400">Cómo le fue al modelo con <span className="font-mono">{selectedSku.id}</span> · {selectedSku.name.substring(0, 40)}</p>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                  <p className="text-[14px] font-bold text-gray-500 uppercase mb-1">{titulo1}</p>
+                  <p className="text-[15px] text-gray-700 leading-relaxed">{texto1}</p>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                  <p className="text-[14px] font-bold text-gray-500 uppercase mb-1">{titulo2}</p>
+                  <p className="text-[15px] text-gray-700 leading-relaxed">{texto2}</p>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                  <p className="text-[14px] font-bold text-gray-500 uppercase mb-1">{titulo3}</p>
+                  <p className="text-[15px] text-gray-700 leading-relaxed">{texto3}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })()}
+
+      {/* ── KPIs y matriz solo cuando NO hay SKU seleccionado ── */}
+      {!selectedSku && <>
+
       {/* ── Sección 1: KPI Cards ── */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 
@@ -482,6 +586,8 @@ export default function Performance() {
           </CardContent>
         </Card>
       </div>
+
+      </>}
 
     </div>
   );

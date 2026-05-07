@@ -1,3 +1,6 @@
+import { apiUrl } from "@/src/lib/api";
+import { authFetch } from "@/src/lib/auth";
+
 export interface AnalysisResult {
   itemId: string;
   cambio_estructural: string;
@@ -11,7 +14,7 @@ export async function analyzeDemand(
   inv: any
 ): Promise<AnalysisResult> {
   const payload = { item, history, inv };
-  const res = await fetch("/api/analyze", {
+  const res = await authFetch(apiUrl("/api/analyze"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

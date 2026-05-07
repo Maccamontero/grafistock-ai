@@ -13,6 +13,9 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { analyzeDemand, AnalysisResult } from "@/src/lib/gemini";
+import { apiUrl } from "@/src/lib/api";
+import { auth, authFetch } from "@/src/lib/auth";
+import Login from "@/src/Login";
 import Performance from "@/src/Performance";
 import { calculateInventoryMetrics, InventoryStats } from "@/src/lib/inventoryStats";
 import { cleanSupplyChainData, MasterRecord } from "@/src/lib/dataCleaning";
@@ -85,6 +88,15 @@ function getYearMonth(fechaOrden: string): string {
 }
 
 export default function App() {
+  const [authed, setAuthed] = useState<boolean>(() => auth.isAuthenticated());
+  if (!authed) {
+    return <Login onSuccess={() => setAuthed(true)} />;
+  }
+
+  return <Dashboard onLogout={() => { auth.clearToken(); setAuthed(false); }} />;
+}
+
+function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [supplies, setSupplies] = useState<Supply[]>([]);
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [inventory, setInventory] = useState<InventoryRecord[]>([]);
@@ -106,6 +118,7 @@ export default function App() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [quantityBlockOpen, setQuantityBlockOpen] = useState(true);
+  const [priorityBlockOpen, setPriorityBlockOpen] = useState(true);
   const [expandedCatInTable, setExpandedCatInTable] = useState<string | null>(null);
   const searchRef = useRef<HTMLDivElement>(null);
 
@@ -134,9 +147,9 @@ export default function App() {
   useEffect(() => {
     const fetchData = async () => {
       const [sRes, hRes, iRes] = await Promise.all([
-        fetch("/api/supplies"),
-        fetch("/api/history"),
-        fetch("/api/inventory")
+        authFetch(apiUrl("/api/supplies")),
+        authFetch(apiUrl("/api/history")),
+        authFetch(apiUrl("/api/inventory"))
       ]);
       const [sData, hData, iData] = await Promise.all([
         sRes.json(),
@@ -152,7 +165,7 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedItem || chartView !== "semanal") return;
-    fetch(`/api/weekly?itemId=${selectedItem}&months=6`)
+    authFetch(apiUrl(`/api/weekly?itemId=${selectedItem}&months=6`))
       .then(r => r.json())
       .then(setWeeklyRawData)
       .catch(() => setWeeklyRawData([]));
@@ -420,6 +433,13 @@ export default function App() {
             <Ship className="w-3 h-3 mr-2 text-blue-600" />
             Import Mode: Active
           </Badge>
+          <button
+            onClick={onLogout}
+            className="text-[11px] font-semibold text-gray-500 hover:text-orange-600 px-3 py-1.5 rounded-lg border border-gray-200 hover:border-orange-200 transition-colors"
+            title="Cerrar sesión"
+          >
+            Cerrar sesión
+          </button>
           <div className="w-8 h-8 rounded-full bg-gray-200 border border-gray-300" />
         </div>
       </header>
@@ -544,13 +564,25 @@ export default function App() {
               {!selectedItem && supplies.length > 0 && (
                 <Card className="border-gray-200 shadow-sm">
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-sm font-bold flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4 text-orange-600" />
-                      Revisión prioritaria — {priorityItems.length} productos requieren atención
-                    </CardTitle>
-                    <p className="text-[11px] text-gray-400">Seleccioná un producto para ver su análisis completo y recomendación de compra.</p>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <CardTitle className="text-sm font-bold flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-orange-600" />
+                          Revisión prioritaria — {priorityItems.length} productos requieren atención
+                        </CardTitle>
+                        <p className="text-[11px] text-gray-400 mt-1">Selecciona un producto para ver su análisis completo y recomendación de compra.</p>
+                      </div>
+                      <button
+                        onClick={() => setPriorityBlockOpen(o => !o)}
+                        className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors shrink-0"
+                        title={priorityBlockOpen ? "Contraer" : "Desplegar"}
+                        aria-label={priorityBlockOpen ? "Contraer revisión prioritaria" : "Desplegar revisión prioritaria"}
+                      >
+                        <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${priorityBlockOpen ? "" : "-rotate-90"}`} />
+                      </button>
+                    </div>
                   </CardHeader>
-                  <CardContent>
+                  {priorityBlockOpen && <CardContent>
                     {priorityItems.length === 0 ? (
                       <div className="flex items-center gap-2 text-green-600 py-4">
                         <CheckCircle2 className="w-5 h-5" />
@@ -606,7 +638,7 @@ export default function App() {
                           })}
                       </div>
                     )}
-                  </CardContent>
+                  </CardContent>}
                 </Card>
               )}
 
@@ -1084,16 +1116,16 @@ export default function App() {
                                 </p>
                                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                                   <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
-                                    <p className="text-[10px] font-bold text-gray-500 uppercase mb-1">¿Cambió algo en las ventas recientes?</p>
-                                    <p className="text-[11px] text-gray-700 leading-relaxed">{currentForecast.cambio_estructural}</p>
+                                    <p className="text-[14px] font-bold text-gray-500 uppercase mb-1">¿Cambió algo en las ventas recientes?</p>
+                                    <p className="text-[15px] text-gray-700 leading-relaxed">{currentForecast.cambio_estructural}</p>
                                   </div>
                                   <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
-                                    <p className="text-[10px] font-bold text-gray-500 uppercase mb-1">¿El alza reciente es real o pasajera?</p>
-                                    <p className="text-[11px] text-gray-700 leading-relaxed">{currentForecast.momentum_interpretacion}</p>
+                                    <p className="text-[14px] font-bold text-gray-500 uppercase mb-1">¿El alza reciente es real o pasajera?</p>
+                                    <p className="text-[15px] text-gray-700 leading-relaxed">{currentForecast.momentum_interpretacion}</p>
                                   </div>
                                   <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
-                                    <p className="text-[10px] font-bold text-gray-500 uppercase mb-1">¿Hay algo más que considerar?</p>
-                                    <p className="text-[11px] text-gray-700 leading-relaxed">{currentForecast.observacion_cualitativa}</p>
+                                    <p className="text-[14px] font-bold text-gray-500 uppercase mb-1">¿Hay algo más que considerar?</p>
+                                    <p className="text-[15px] text-gray-700 leading-relaxed">{currentForecast.observacion_cualitativa}</p>
                                   </div>
                                 </div>
                               </div>

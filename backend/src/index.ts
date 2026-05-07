@@ -1,13 +1,27 @@
 import "dotenv/config";
 import express from "express";
-import { createServer as createViteServer } from "vite";
+import cors from "cors";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import Papa from "papaparse";
+import { analyzeRouter } from "./routes/analyze.ts";
+import { loginRouter } from "./routes/login.ts";
+import { requireAuth } from "./middleware/auth.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ── Filtro de categoría ────────────────────────────────────────────────
+// El modelo solo procesa SKUs cuyo código empieza con este prefijo.
+// Hoy: "112" = Film BOPP (rollos para plastificar).
+// Para volver a procesar TODAS las categorías, deja el string vacío: "".
+const PREFIJO_CATEGORIA_FILTRO = "112";
+
+function pasaFiltroCategoria(codigo: string | undefined): boolean {
+  if (!PREFIJO_CATEGORIA_FILTRO) return true;
+  return (codigo ?? "").trim().startsWith(PREFIJO_CATEGORIA_FILTRO);
+}
 
 // --- Date parsing (for importaciones) ---
 const MONTH_MAP: Record<string, string> = {
@@ -104,15 +118,15 @@ function readCSV(filePath: string): any[] {
 }
 
 function loadImportaciones(): ImportRow[] {
-  const filePath = path.join(__dirname, "public", "data", "Importaciones consolidadas csv.csv");
+  const filePath = path.join(__dirname, "..", "data", "Importaciones consolidadas csv.csv");
   if (!fs.existsSync(filePath)) return [];
-  return readCSV(filePath) as ImportRow[];
+  return (readCSV(filePath) as ImportRow[]).filter(r => pasaFiltroCategoria(r.CODIGO));
 }
 
 function loadVentas(): VentasRow[] {
-  const filePath = path.join(__dirname, "public", "data", "Consolidado ventas e inventario mes a mes CSV.csv");
+  const filePath = path.join(__dirname, "..", "data", "Consolidado ventas e inventario mes a mes CSV.csv");
   if (!fs.existsSync(filePath)) return [];
-  return readCSV(filePath) as VentasRow[];
+  return (readCSV(filePath) as VentasRow[]).filter(r => pasaFiltroCategoria(r["COD. PRODUCTO"]));
 }
 
 // --- Weekly inventory CSV parser ---
@@ -141,7 +155,7 @@ function loadWeeklyInventory(): WeeklyResult {
   ];
 
   for (const { name, year } of files) {
-    const fullPath = path.join(__dirname, "public", "data", name);
+    const fullPath = path.join(__dirname, "..", "data", name);
     if (!fs.existsSync(fullPath)) { console.warn(`  [semanal] No encontrado: ${name}`); continue; }
 
     const raw = fs.readFileSync(fullPath, "utf-8").replace(/^\uFEFF/, "");
@@ -179,6 +193,7 @@ function loadWeeklyInventory(): WeeklyResult {
       const row = rows[r];
       const id  = (row[0] ?? "").trim();
       if (!id || !/^\d+/.test(id)) continue;   // skip empty / header artifacts
+      if (!pasaFiltroCategoria(id)) continue;  // ignora SKUs fuera de la categoría filtrada
 
       allWeeklySkus.add(id);
 
@@ -1812,8 +1827,17 @@ function buildPerformanceReport() {
 // --- Server ---
 async function startServer() {
   const app = express();
-  const PORT = 3000;
-  app.use(express.json());
+  const PORT = Number(process.env.PORT) || 8080;
+  const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:3000";
+  app.use(cors({ origin: CORS_ORIGIN }));
+  app.use(express.json({ limit: "5mb" }));
+
+  // ── Rutas públicas (sin token) ──────────────────────────────────────
+  app.get("/api/health", (_req, res) => res.json({ ok: true, service: "grafistock-backend" }));
+  app.use("/api/login", loginRouter);
+
+  // ── Middleware de autenticación: TODO lo que sigue requiere JWT ─────
+  app.use("/api", requireAuth);
 
   const { supplies, history, inventory, weeklyRaw } = buildData();
 
@@ -1841,115 +1865,19 @@ async function startServer() {
     return res.json(data);
   });
 
-  app.post("/api/analyze", async (req, res) => {
-    const { item, history: itemHistory, inv } = req.body;
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey || apiKey === "your_new_key_here") {
-      return res.status(400).json({ error: "ANTHROPIC_API_KEY no configurada en .env" });
-    }
-    try {
-      // Ultimos 24 meses de historial con DEMANDA_ADJ, ESTADO y FUENTE_ADJ
-      const hist24 = [...(itemHistory ?? [])]
-        .sort((a: any, b: any) => b.date.localeCompare(a.date))
-        .slice(0, 24)
-        .reverse()
-        .map((r: any) => ({
-          mes: r.date?.substring(0, 7),
-          demanda_adj: r.demanda_adj,
-          estado: r.estado,
-          fuente_adj: r.fuente_adj,
-        }));
+  app.use("/api/analyze", analyzeRouter);
 
-      const alertaMomentum = inv?.revisar_precio === true;
+  // Manejador 404 para rutas /api/* desconocidas
+  app.use("/api", (_req, res) => res.status(404).json({ error: "Endpoint no encontrado" }));
 
-      const contextBlock = {
-        codigo:            item?.id,
-        descripcion:       item?.name,
-        categoria_prefijo: item?.id?.substring(0, 3),
-        tipo_demanda:      inv?.tipo_demanda,
-        mes_proyectado:    inv?.projected_month,
-        runrate_adj:       inv?.runrate_adj,
-        runrate_estacional:inv?.runrate_estacional,
-        cv_norm:           inv?.cv_cap,
-        factor_estacional: inv?.factor_estacional,
-        idx_last3:         inv?.idx_last3,
-        idx_proyectado:    inv?.idx_proyectado,
-        ancho_corredor_pct:inv?.ancho_corredor,
-        cover_p50:         inv?.cover_p50,
-        cover_p75:         inv?.cover_p75,
-        cover_p90:         inv?.cover_p90,
-        inv_arribo:        inv?.inv_arribo,
-        zona:              inv?.zona,
-        escenario_default: inv?.escenario_default,
-        sugerido_final:    inv?.sugerido_final,
-        alerta_momentum:   alertaMomentum,
-        revisar_precio:    inv?.revisar_precio,
-        historico_demanda: hist24,
-      };
-
-      const prompt = `Eres un analista de inventario ayudando a revisar un SKU específico. Tu rol es interpretativo, no predictivo. El modelo estadístico ya calculó los números del corredor P50/P75/P90. Tu tarea es complementar ese cálculo con observaciones cualitativas que el modelo puede haber pasado por alto.
-
-Responde tres preguntas específicas sobre el SKU en máximo 2 párrafos por respuesta. Sé concreto, evita generalidades. Si no hay información suficiente para responder una pregunta, dilo explícitamente.
-
-DATOS DEL SKU:
-${JSON.stringify(contextBlock, null, 2)}
-
-Pregunta 1. ¿Hay señales de cambio estructural en los últimos 3 meses de DEMANDA_ADJ que NO se expliquen por el patrón estacional del SKU o de su categoría? Mira específicamente si hay un salto de nivel sostenido, una caída abrupta, o un patrón nuevo que no aparece en años anteriores.
-
-Pregunta 2. Si el SKU tiene ALERTA_MOMENTUM activada (alerta_momentum: true), revisa el histórico reciente e indica si el momentum parece ser ruido coyuntural (un mes atípico) o un patrón que podría sostenerse en los próximos 3 a 6 meses. Si el SKU no tiene momentum alto, responde indicando que no aplica.
-
-Pregunta 3. Al mirar el histórico completo de DEMANDA_ADJ con sus estados mensuales, ¿hay alguna observación cualitativa que el modelo estadístico podría haber pasado por alto? Por ejemplo: un mes con comportamiento anómalo que contamina el promedio, una tendencia gradual que el CV no captura bien, o una característica del ciclo anual que el índice estacional no refleja.
-
-Responde ÚNICAMENTE con un JSON válido, sin texto adicional, con esta estructura exacta:
-{
-  "cambio_estructural": "<respuesta a Pregunta 1, máximo 2 párrafos>",
-  "momentum_interpretacion": "<respuesta a Pregunta 2, máximo 2 párrafos>",
-  "observacion_cualitativa": "<respuesta a Pregunta 3, máximo 2 párrafos>"
-}`;
-
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 1024,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-
-      const data = await response.json() as any;
-      if (!response.ok) throw new Error(data.error?.message ?? response.statusText);
-
-      let text = data.content?.[0]?.text ?? "{}";
-      text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
-      const result = JSON.parse(text);
-      res.json({ itemId: item.id, ...result });
-    } catch (err: any) {
-      console.error("Claude error:", err.message);
-      res.status(500).json({ error: err.message });
-    }
+  // Manejador global de errores — nunca devuelve stack traces al cliente
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error("[backend] error no controlado:", err);
+    res.status(500).json({ error: "Error interno del servidor" });
   });
 
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
-
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Backend running on http://localhost:${PORT}`);
   });
 }
 
