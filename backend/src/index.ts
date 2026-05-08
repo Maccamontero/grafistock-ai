@@ -8,6 +8,9 @@ import Papa from "papaparse";
 import { analyzeRouter } from "./routes/analyze.ts";
 import { loginRouter } from "./routes/login.ts";
 import { requireAuth } from "./middleware/auth.ts";
+import { loginRateLimiter } from "./middleware/rate-limit.ts";
+import { recordMetric, nowIso } from "./lib/metrics.ts";
+import { logDebug } from "./lib/log.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -358,24 +361,24 @@ function buildData() {
     }
   }
 
-  console.log("── Clasificación ESTADO ──────────────────");
+  logDebug("── Clasificación ESTADO ──────────────────");
   for (const [estado, count] of Object.entries(estadoCounts)) {
-    console.log(`  ${estado.padEnd(20)} ${count.toString().padStart(5)} registros`);
+    logDebug(`  ${estado.padEnd(20)} ${count.toString().padStart(5)} registros`);
   }
   const total = Object.values(estadoCounts).reduce((a, b) => a + b, 0);
-  console.log(`  ${"TOTAL".padEnd(20)} ${total.toString().padStart(5)} registros`);
-  console.log("──────────────────────────────────────────");
+  logDebug(`  ${"TOTAL".padEnd(20)} ${total.toString().padStart(5)} registros`);
+  logDebug("──────────────────────────────────────────");
 
   // Diagnóstico SKU 112021 — validar QUIEBRE_ARRASTRE en 2023
   const sku112021 = ventasMap["112021"];
   if (sku112021) {
-    console.log("── Diagnóstico SKU 112021 (2023) ─────────");
+    logDebug("── Diagnóstico SKU 112021 (2023) ─────────");
     sku112021.months
       .filter(m => m.yearMonth.startsWith("2023"))
       .forEach(m => {
-        console.log(`  ${m.yearMonth}  ventas=${String(m.qty).padStart(4)}  inv=${String(m.inv).padStart(5)}  → ${m.estado}`);
+        logDebug(`  ${m.yearMonth}  ventas=${String(m.qty).padStart(4)}  inv=${String(m.inv).padStart(5)}  → ${m.estado}`);
       });
-    console.log("──────────────────────────────────────────");
+    logDebug("──────────────────────────────────────────");
   }
 
   // ── 2.5b. Enriquecimiento con inventario semanal → QUIEBRE_PARCIAL ──────────
@@ -396,26 +399,26 @@ function buildData() {
     }
   }
 
-  console.log("── ESTADO (post enriquecimiento semanal) ─────────────────");
+  logDebug("── ESTADO (post enriquecimiento semanal) ─────────────────");
   const estadoOrder = ["NORMAL","QUIEBRE","QUIEBRE_PARCIAL","QUIEBRE_PROBABLE","QUIEBRE_ARRASTRE","SIN_DEMANDA"];
   for (const e of estadoOrder) {
-    console.log(`  ${e.padEnd(22)} ${String(estadoCounts[e] ?? 0).padStart(5)} registros`);
+    logDebug(`  ${e.padEnd(22)} ${String(estadoCounts[e] ?? 0).padStart(5)} registros`);
   }
   const totalPost = Object.values(estadoCounts).reduce((a, b) => a + b, 0);
-  console.log(`  ${"TOTAL".padEnd(22)} ${totalPost.toString().padStart(5)} registros`);
-  console.log("──────────────────────────────────────────");
+  logDebug(`  ${"TOTAL".padEnd(22)} ${totalPost.toString().padStart(5)} registros`);
+  logDebug("──────────────────────────────────────────");
 
   // Validación 6: cobertura de SKUs entre archivos semanales y maestro
   const skusEnMaestro = new Set(Object.keys(ventasMap));
   const soloEnSemanal = [...allWeeklySkus].filter(id => !skusEnMaestro.has(id));
   const soloEnMaestro = [...skusEnMaestro].filter(id => !allWeeklySkus.has(id));
-  console.log("── Cobertura SKUs (semanal vs maestro) ───────────────────");
-  console.log(`  En semanales pero NO en maestro: ${soloEnSemanal.length} SKUs (ignorados)`);
-  console.log(`  En maestro pero NO en semanales: ${soloEnMaestro.length} SKUs (sin enriquecimiento)`);
+  logDebug("── Cobertura SKUs (semanal vs maestro) ───────────────────");
+  logDebug(`  En semanales pero NO en maestro: ${soloEnSemanal.length} SKUs (ignorados)`);
+  logDebug(`  En maestro pero NO en semanales: ${soloEnMaestro.length} SKUs (sin enriquecimiento)`);
   if (soloEnSemanal.length > 0 && soloEnSemanal.length <= 15) {
-    console.log(`  SKUs solo en semanal: ${soloEnSemanal.join(", ")}`);
+    logDebug(`  SKUs solo en semanal: ${soloEnSemanal.join(", ")}`);
   }
-  console.log("──────────────────────────────────────────");
+  logDebug("──────────────────────────────────────────");
 
   // ── 2.6. Calcular DEMANDA_ADJ con cascada de fallbacks ────────────────────
   const QUIEBRE_ESTADOS = new Set(["QUIEBRE", "QUIEBRE_PROBABLE", "QUIEBRE_ARRASTRE"]);
@@ -506,41 +509,41 @@ function buildData() {
   }
 
   const demandaPerdida = sumAdjusted - sumOriginal;
-  console.log("── DEMANDA_ADJ — Fuentes ─────────────────");
+  logDebug("── DEMANDA_ADJ — Fuentes ─────────────────");
   for (const [fuente, count] of Object.entries(fuenteCounts)) {
-    console.log(`  ${fuente.padEnd(22)} ${count.toString().padStart(5)} registros`);
+    logDebug(`  ${fuente.padEnd(22)} ${count.toString().padStart(5)} registros`);
   }
-  console.log(`  ${"TOTAL".padEnd(22)} ${Object.values(fuenteCounts).reduce((a,b)=>a+b,0).toString().padStart(5)} registros`);
-  console.log("──────────────────────────────────────────");
-  console.log(`  Suma ventas originales        ${sumOriginal.toString().padStart(7)}`);
-  console.log(`  Suma DEMANDA_ADJ              ${sumAdjusted.toString().padStart(7)}`);
-  console.log(`  Demanda perdida estimada      ${demandaPerdida.toString().padStart(7)} unidades`);
-  console.log("──────────────────────────────────────────");
+  logDebug(`  ${"TOTAL".padEnd(22)} ${Object.values(fuenteCounts).reduce((a,b)=>a+b,0).toString().padStart(5)} registros`);
+  logDebug("──────────────────────────────────────────");
+  logDebug(`  Suma ventas originales        ${sumOriginal.toString().padStart(7)}`);
+  logDebug(`  Suma DEMANDA_ADJ              ${sumAdjusted.toString().padStart(7)}`);
+  logDebug(`  Demanda perdida estimada      ${demandaPerdida.toString().padStart(7)} unidades`);
+  logDebug("──────────────────────────────────────────");
 
   // Diagnóstico SKU 112021 — esperar IMPUTADO_POSTERIOR ~22 unidades
   const sku112021b = ventasMap["112021"];
   if (sku112021b) {
-    console.log("── Diagnóstico SKU 112021 (2023) ─────────");
-    console.log("  MES       VENTAS  ESTADO               ADJ  FUENTE");
+    logDebug("── Diagnóstico SKU 112021 (2023) ─────────");
+    logDebug("  MES       VENTAS  ESTADO               ADJ  FUENTE");
     sku112021b.months
       .filter(m => m.yearMonth.startsWith("2023"))
       .forEach(m => {
-        console.log(`  ${m.yearMonth}   ${String(m.qty).padStart(4)}  ${(m.estado ?? "").padEnd(20)} ${String(m.demanda_adj).padStart(4)}  ${m.fuente_adj}`);
+        logDebug(`  ${m.yearMonth}   ${String(m.qty).padStart(4)}  ${(m.estado ?? "").padEnd(20)} ${String(m.demanda_adj).padStart(4)}  ${m.fuente_adj}`);
       });
-    console.log("──────────────────────────────────────────");
+    logDebug("──────────────────────────────────────────");
   }
 
   // Diagnóstico SKU 112016 — esperar IMPUTADO_POSTERIOR ene-abr
   const sku112016 = ventasMap["112016"];
   if (sku112016) {
-    console.log("── Diagnóstico SKU 112016 (2023) ─────────");
-    console.log("  MES       VENTAS  ESTADO               ADJ  FUENTE");
+    logDebug("── Diagnóstico SKU 112016 (2023) ─────────");
+    logDebug("  MES       VENTAS  ESTADO               ADJ  FUENTE");
     sku112016.months
       .filter(m => m.yearMonth.startsWith("2023"))
       .forEach(m => {
-        console.log(`  ${m.yearMonth}   ${String(m.qty).padStart(4)}  ${(m.estado ?? "").padEnd(20)} ${String(m.demanda_adj).padStart(4)}  ${m.fuente_adj}`);
+        logDebug(`  ${m.yearMonth}   ${String(m.qty).padStart(4)}  ${(m.estado ?? "").padEnd(20)} ${String(m.demanda_adj).padStart(4)}  ${m.fuente_adj}`);
       });
-    console.log("──────────────────────────────────────────");
+    logDebug("──────────────────────────────────────────");
   }
 
   // ── 2.7b. Análisis de estacionalidad con DEMANDA_ADJ ──────────────────────
@@ -573,10 +576,10 @@ function buildData() {
     const sorted = Object.entries(avg)
       .map(([m, v]) => ({ m: Number(m), v }))
       .sort((a, b) => b.v - a.v);
-    console.log(`  ── ${label}`);
+    logDebug(`  ── ${label}`);
     for (const { m, v } of sorted) {
       const bar = "█".repeat(Math.round((v / max) * 12));
-      console.log(`     ${MN[m].padEnd(4)} ${v.toFixed(0).padStart(6)}  ${bar}`);
+      logDebug(`     ${MN[m].padEnd(4)} ${v.toFixed(0).padStart(6)}  ${bar}`);
     }
   }
 
@@ -594,15 +597,15 @@ function buildData() {
   const season121  = calcSeasonality(byPrefix("121"));
   const season112  = calcSeasonality(byPrefix("112"));
 
-  console.log("── Estacionalidad — Portafolio completo ──");
+  logDebug("── Estacionalidad — Portafolio completo ──");
   printSeasonality("Portafolio completo (DEMANDA_ADJ)", seasonAll);
-  console.log("──────────────────────────────────────────");
+  logDebug("──────────────────────────────────────────");
   printSeasonality("Bolsillos 113xxx", season113);
-  console.log("──────────────────────────────────────────");
+  logDebug("──────────────────────────────────────────");
   printSeasonality("Carátulas 121xxx", season121);
-  console.log("──────────────────────────────────────────");
+  logDebug("──────────────────────────────────────────");
   printSeasonality("BOPP 112xxx", season112);
-  console.log("──────────────────────────────────────────");
+  logDebug("──────────────────────────────────────────");
 
   // Último mes del histórico y rango last-3
   const allYearMonths = allEntries.flatMap(v => v.months.map(m => m.yearMonth));
@@ -614,9 +617,9 @@ function buildData() {
     if (mo <= 0) { mo += 12; y -= 1; }
     last3YMs.push(`${y}-${String(mo).padStart(2,"0")}`);
   }
-  console.log(`  Último mes en el archivo:  ${lastYM}`);
-  console.log(`  Últimos 3 meses (70/30):   ${last3YMs.join("  ")}`);
-  console.log("──────────────────────────────────────────");
+  logDebug(`  Último mes en el archivo:  ${lastYM}`);
+  logDebug(`  Últimos 3 meses (70/30):   ${last3YMs.join("  ")}`);
+  logDebug("──────────────────────────────────────────");
 
   // Cruce: últimos 3 meses de SKUs clave vs estacionalidad de su categoría
   const skusCruce = ["113005","121023","113002"];
@@ -628,13 +631,13 @@ function buildData() {
     const prefix = skuId.substring(0,3);
     const catSeason = prefix === "113" ? season113 : prefix === "121" ? season121 : seasonAll;
     const catAvg = Object.values(catSeason).reduce((a,b)=>a+b,0)/12;
-    console.log(`  SKU ${skuId} — últimos 3 meses:`);
+    logDebug(`  SKU ${skuId} — últimos 3 meses:`);
     for (const m of last3) {
       const idx = catSeason[m.month] / catAvg;
       const nivel = idx >= 1.1 ? "ALTO" : idx <= 0.9 ? "BAJO" : "NORMAL";
-      console.log(`    ${m.yearMonth}  adj=${String(m.demanda_adj).padStart(4)}  idx_cat=${idx.toFixed(2)}  → ${nivel} para su categoría`);
+      logDebug(`    ${m.yearMonth}  adj=${String(m.demanda_adj).padStart(4)}  idx_cat=${idx.toFixed(2)}  → ${nivel} para su categoría`);
     }
-    console.log("──────────────────────────────────────────");
+    logDebug("──────────────────────────────────────────");
   }
 
   // ── 2.7c. Top 5 SKUs por peso en portafolio — cruce con estacionalidad ────
@@ -654,16 +657,16 @@ function buildData() {
     const totalRR = skuWeights.reduce((s,d) => s + d.runRateAdj, 0);
     const top5    = [...skuWeights].sort((a,b) => b.runRateAdj - a.runRateAdj).slice(0,5);
 
-    console.log("── Top 5 SKUs por peso en portafolio ─────");
-    console.log("  SKU      RR_NUEVO  RR_ANTIG  PESO%   NOMBRE");
+    logDebug("── Top 5 SKUs por peso en portafolio ─────");
+    logDebug("  SKU      RR_NUEVO  RR_ANTIG  PESO%   NOMBRE");
     for (const d of top5) {
       const peso = (d.runRateAdj / totalRR * 100).toFixed(1);
-      console.log(`  ${d.id.padEnd(8)} ${d.runRateAdj.toFixed(1).padStart(8)}  ${d.runRateOld.toFixed(1).padStart(8)}  ${peso.padStart(5)}%  ${d.name.substring(0,30)}`);
+      logDebug(`  ${d.id.padEnd(8)} ${d.runRateAdj.toFixed(1).padStart(8)}  ${d.runRateOld.toFixed(1).padStart(8)}  ${peso.padStart(5)}%  ${d.name.substring(0,30)}`);
     }
-    console.log("──────────────────────────────────────────");
+    logDebug("──────────────────────────────────────────");
 
     // Cruce con estacionalidad de su categoría
-    console.log("  Cruce últimos 3 meses vs estacionalidad:");
+    logDebug("  Cruce últimos 3 meses vs estacionalidad:");
     for (const d of top5) {
       const prefix = d.id.substring(0,3);
       const catSeason = prefix === "113" ? season113
@@ -677,18 +680,18 @@ function buildData() {
         return idx >= 1.1 ? "ALTO" : idx <= 0.9 ? "BAJO" : "NORM";
       });
       const resumen = niveles.join(" / ");
-      console.log(`  ${d.id.padEnd(8)} últimos 3 → ${resumen}  (${MN[last3m[0].month]} ${MN[last3m[1].month]} ${MN[last3m[2].month]})`);
+      logDebug(`  ${d.id.padEnd(8)} últimos 3 → ${resumen}  (${MN[last3m[0].month]} ${MN[last3m[1].month]} ${MN[last3m[2].month]})`);
     }
-    console.log("──────────────────────────────────────────");
+    logDebug("──────────────────────────────────────────");
 
     // ¿El -21% está concentrado o distribuido?
     const top5RROld = top5.reduce((s,d)=>s+d.runRateOld,0);
     const top5RRNew = top5.reduce((s,d)=>s+d.runRateAdj,0);
     const top5Pct   = (top5RRNew/totalRR*100).toFixed(1);
     const top5Delta = ((top5RRNew-top5RROld)/top5RROld*100).toFixed(1);
-    console.log(`  Los 5 SKUs top concentran ${top5Pct}% del portafolio.`);
-    console.log(`  Su variación agregada RunRate nuevo vs antiguo: ${top5Delta}%`);
-    console.log("──────────────────────────────────────────");
+    logDebug(`  Los 5 SKUs top concentran ${top5Pct}% del portafolio.`);
+    logDebug(`  Su variación agregada RunRate nuevo vs antiguo: ${top5Delta}%`);
+    logDebug("──────────────────────────────────────────");
   }
 
   // ── 2.7. Validación RunRate — comparativo antiguo vs nuevo ────────────────
@@ -705,13 +708,13 @@ function buildData() {
     const runRateAdj     = 0.7 * avgLast3 + 0.3 * avgHistorico;
     const avgSimpleAntig = qtyOrig.reduce((a, b) => a + b, 0) / (qtyOrig.length || 1);
 
-    console.log(`── RunRate SKU ${skuId} ──────────────────────`);
-    console.log(`  Promedio simple antiguo (qty orig)   ${avgSimpleAntig.toFixed(2)}`);
-    console.log(`  Avg histórico DEMANDA_ADJ            ${avgHistorico.toFixed(2)}`);
-    console.log(`  Avg últimos 3 meses DEMANDA_ADJ      ${avgLast3.toFixed(2)}`);
-    console.log(`  RUNRATE_ADJ (0.7×last3+0.3×hist)     ${runRateAdj.toFixed(2)}`);
-    console.log(`  Δ (RunRate − simple antiguo)         ${(runRateAdj - avgSimpleAntig).toFixed(2)}`);
-    console.log("──────────────────────────────────────────");
+    logDebug(`── RunRate SKU ${skuId} ──────────────────────`);
+    logDebug(`  Promedio simple antiguo (qty orig)   ${avgSimpleAntig.toFixed(2)}`);
+    logDebug(`  Avg histórico DEMANDA_ADJ            ${avgHistorico.toFixed(2)}`);
+    logDebug(`  Avg últimos 3 meses DEMANDA_ADJ      ${avgLast3.toFixed(2)}`);
+    logDebug(`  RUNRATE_ADJ (0.7×last3+0.3×hist)     ${runRateAdj.toFixed(2)}`);
+    logDebug(`  Δ (RunRate − simple antiguo)         ${(runRateAdj - avgSimpleAntig).toFixed(2)}`);
+    logDebug("──────────────────────────────────────────");
   }
 
   // ── 2.8. Validación global RunRate — todos los SKUs ───────────────────────
@@ -746,47 +749,47 @@ function buildData() {
   const negativos = globalDelta.filter(d => d.delta < -d.antiguo * 0.05).length;
   const estables  = globalDelta.filter(d => Math.abs(d.delta) <= d.antiguo * 0.05).length;
 
-  console.log("── Validación Global RunRate (168 SKUs) ──");
-  console.log(`  Δ positivo  (RunRate > antiguo +5%)   ${String(positivos).padStart(4)} SKUs`);
-  console.log(`  Δ negativo  (RunRate < antiguo −5%)   ${String(negativos).padStart(4)} SKUs`);
-  console.log(`  Δ ≈ 0       (variación ≤ 5%)          ${String(estables).padStart(4)} SKUs`);
-  console.log("──────────────────────────────────────────");
+  logDebug("── Validación Global RunRate (168 SKUs) ──");
+  logDebug(`  Δ positivo  (RunRate > antiguo +5%)   ${String(positivos).padStart(4)} SKUs`);
+  logDebug(`  Δ negativo  (RunRate < antiguo −5%)   ${String(negativos).padStart(4)} SKUs`);
+  logDebug(`  Δ ≈ 0       (variación ≤ 5%)          ${String(estables).padStart(4)} SKUs`);
+  logDebug("──────────────────────────────────────────");
 
   // Top 10 mayor incremento
   const top10sube = [...globalDelta].sort((a, b) => b.delta - a.delta).slice(0, 10);
-  console.log("  Top 10 SKUs con mayor INCREMENTO RunRate:");
-  console.log("  SKU      ANTIG  HIST_ADJ  LAST3   NUEVO     Δ   NOMBRE");
+  logDebug("  Top 10 SKUs con mayor INCREMENTO RunRate:");
+  logDebug("  SKU      ANTIG  HIST_ADJ  LAST3   NUEVO     Δ   NOMBRE");
   for (const d of top10sube) {
-    console.log(`  ${d.id.padEnd(8)} ${d.antiguo.toFixed(1).padStart(5)}  ${d.avgHistorico.toFixed(1).padStart(7)}  ${d.avgLast3.toFixed(1).padStart(5)}  ${d.nuevo.toFixed(1).padStart(6)}  ${("+" + d.delta.toFixed(1)).padStart(6)}  ${d.name.substring(0, 30)}`);
+    logDebug(`  ${d.id.padEnd(8)} ${d.antiguo.toFixed(1).padStart(5)}  ${d.avgHistorico.toFixed(1).padStart(7)}  ${d.avgLast3.toFixed(1).padStart(5)}  ${d.nuevo.toFixed(1).padStart(6)}  ${("+" + d.delta.toFixed(1)).padStart(6)}  ${d.name.substring(0, 30)}`);
   }
-  console.log("──────────────────────────────────────────");
+  logDebug("──────────────────────────────────────────");
 
   // Top 10 mayor decremento
   const negativosList = globalDelta.filter(d => d.delta < -d.antiguo * 0.05);
   const top10baja = [...negativosList].sort((a, b) => a.delta - b.delta).slice(0, 10);
-  console.log("  Top 10 SKUs con mayor DECREMENTO RunRate:");
-  console.log("  SKU      ANTIG  HIST_ADJ  LAST3   NUEVO     Δ   SD_L3  NOMBRE");
+  logDebug("  Top 10 SKUs con mayor DECREMENTO RunRate:");
+  logDebug("  SKU      ANTIG  HIST_ADJ  LAST3   NUEVO     Δ   SD_L3  NOMBRE");
   for (const d of top10baja) {
-    console.log(`  ${d.id.padEnd(8)} ${d.antiguo.toFixed(1).padStart(5)}  ${d.avgHistorico.toFixed(1).padStart(7)}  ${d.avgLast3.toFixed(1).padStart(5)}  ${d.nuevo.toFixed(1).padStart(6)}  ${d.delta.toFixed(1).padStart(6)}  ${String(d.sinDemandaEnLast3).padStart(5)}  ${d.name.substring(0, 28)}`);
+    logDebug(`  ${d.id.padEnd(8)} ${d.antiguo.toFixed(1).padStart(5)}  ${d.avgHistorico.toFixed(1).padStart(7)}  ${d.avgLast3.toFixed(1).padStart(5)}  ${d.nuevo.toFixed(1).padStart(6)}  ${d.delta.toFixed(1).padStart(6)}  ${String(d.sinDemandaEnLast3).padStart(5)}  ${d.name.substring(0, 28)}`);
   }
-  console.log("──────────────────────────────────────────");
+  logDebug("──────────────────────────────────────────");
 
   // Cuántos negativos tienen SIN_DEMANDA reciente
   const negativosConSD = negativosList.filter(d => d.sinDemandaEnLast3 > 0).length;
-  console.log(`  De ${negativosList.length} SKUs con Δ negativo:`);
-  console.log(`    Con ≥1 SIN_DEMANDA en últimos 3 meses  ${String(negativosConSD).padStart(4)} SKUs (${(negativosConSD/negativosList.length*100).toFixed(0)}%)`);
-  console.log(`    Sin SIN_DEMANDA reciente               ${String(negativosList.length - negativosConSD).padStart(4)} SKUs (${((negativosList.length-negativosConSD)/negativosList.length*100).toFixed(0)}%)`);
-  console.log("──────────────────────────────────────────");
+  logDebug(`  De ${negativosList.length} SKUs con Δ negativo:`);
+  logDebug(`    Con ≥1 SIN_DEMANDA en últimos 3 meses  ${String(negativosConSD).padStart(4)} SKUs (${(negativosConSD/negativosList.length*100).toFixed(0)}%)`);
+  logDebug(`    Sin SIN_DEMANDA reciente               ${String(negativosList.length - negativosConSD).padStart(4)} SKUs (${((negativosList.length-negativosConSD)/negativosList.length*100).toFixed(0)}%)`);
+  logDebug("──────────────────────────────────────────");
 
   // Cambio porcentual agregado del portafolio
   const sumaAntigua = globalDelta.reduce((s, d) => s + d.antiguo, 0);
   const sumaNueva   = globalDelta.reduce((s, d) => s + d.nuevo, 0);
   const cambioPct   = ((sumaNueva - sumaAntigua) / sumaAntigua) * 100;
-  console.log(`  Portafolio — demanda reconocida agregada:`);
-  console.log(`    Suma promedios simples antiguos   ${sumaAntigua.toFixed(1)}`);
-  console.log(`    Suma RunRate ADJ nuevos           ${sumaNueva.toFixed(1)}`);
-  console.log(`    Cambio porcentual agregado        ${cambioPct >= 0 ? "+" : ""}${cambioPct.toFixed(2)}%`);
-  console.log("──────────────────────────────────────────");
+  logDebug(`  Portafolio — demanda reconocida agregada:`);
+  logDebug(`    Suma promedios simples antiguos   ${sumaAntigua.toFixed(1)}`);
+  logDebug(`    Suma RunRate ADJ nuevos           ${sumaNueva.toFixed(1)}`);
+  logDebug(`    Cambio porcentual agregado        ${cambioPct >= 0 ? "+" : ""}${cambioPct.toFixed(2)}%`);
+  logDebug("──────────────────────────────────────────");
 
   // ── 2.8b. Clasificación por tipo de demanda ─────────────────────────────
   //
@@ -971,32 +974,32 @@ function buildData() {
   }
 
   // Diagnóstico — top decrementos
-  console.log("── Factor Estacional — Top Decrementos ───");
-  console.log("  SKU      PROY  IDX_P  IDX_L3  F_RAW  F_EST  CAP   RR_ADJ  RR_EST");
+  logDebug("── Factor Estacional — Top Decrementos ───");
+  logDebug("  SKU      PROY  IDX_P  IDX_L3  F_RAW  F_EST  CAP   RR_ADJ  RR_EST");
   for (const id of ["113005","121023","113002"]) {
     const d = skuRRE[id]; if (!d) continue;
-    console.log(`  ${id}  ${MN[d.projectedMonth].padEnd(4)}  ${d.idxProyectado.toFixed(2).padStart(5)}  ${d.idxLast3.toFixed(2).padStart(6)}  ${d.factorRaw.toFixed(2).padStart(5)}  ${d.factorEstacional.toFixed(2).padStart(5)}  ${d.capApplied?"SI ":"no "}  ${d.runrateAdj.toFixed(1).padStart(6)}  ${d.runrateEstacional.toFixed(1).padStart(6)}`);
+    logDebug(`  ${id}  ${MN[d.projectedMonth].padEnd(4)}  ${d.idxProyectado.toFixed(2).padStart(5)}  ${d.idxLast3.toFixed(2).padStart(6)}  ${d.factorRaw.toFixed(2).padStart(5)}  ${d.factorEstacional.toFixed(2).padStart(5)}  ${d.capApplied?"SI ":"no "}  ${d.runrateAdj.toFixed(1).padStart(6)}  ${d.runrateEstacional.toFixed(1).padStart(6)}`);
   }
-  console.log("──────────────────────────────────────────");
+  logDebug("──────────────────────────────────────────");
 
   // Diagnóstico — BOPP
-  console.log("── Factor Estacional — BOPP ──────────────");
-  console.log("  SKU      PROY  IDX_P  IDX_L3  F_RAW  F_EST  CAP   RR_ADJ  RR_EST");
+  logDebug("── Factor Estacional — BOPP ──────────────");
+  logDebug("  SKU      PROY  IDX_P  IDX_L3  F_RAW  F_EST  CAP   RR_ADJ  RR_EST");
   for (const id of ["112017","112016","112021"]) {
     const d = skuRRE[id]; if (!d) continue;
-    console.log(`  ${id}  ${MN[d.projectedMonth].padEnd(4)}  ${d.idxProyectado.toFixed(2).padStart(5)}  ${d.idxLast3.toFixed(2).padStart(6)}  ${d.factorRaw.toFixed(2).padStart(5)}  ${d.factorEstacional.toFixed(2).padStart(5)}  ${d.capApplied?"SI ":"no "}  ${d.runrateAdj.toFixed(1).padStart(6)}  ${d.runrateEstacional.toFixed(1).padStart(6)}`);
+    logDebug(`  ${id}  ${MN[d.projectedMonth].padEnd(4)}  ${d.idxProyectado.toFixed(2).padStart(5)}  ${d.idxLast3.toFixed(2).padStart(6)}  ${d.factorRaw.toFixed(2).padStart(5)}  ${d.factorEstacional.toFixed(2).padStart(5)}  ${d.capApplied?"SI ":"no "}  ${d.runrateAdj.toFixed(1).padStart(6)}  ${d.runrateEstacional.toFixed(1).padStart(6)}`);
   }
-  console.log("──────────────────────────────────────────");
+  logDebug("──────────────────────────────────────────");
 
   // Cap stats + portafolio
-  console.log(`  Cap superior aplicado (>1.5):  ${capSuperior} SKUs`);
-  console.log(`  Cap inferior aplicado (<0.7):  ${capInferior} SKUs`);
+  logDebug(`  Cap superior aplicado (>1.5):  ${capSuperior} SKUs`);
+  logDebug(`  Cap inferior aplicado (<0.7):  ${capInferior} SKUs`);
   const cambioPctRRE = ((sumaRRE - sumaAntigua2) / sumaAntigua2) * 100;
-  console.log(`  Portafolio RUNRATE_ESTACIONAL vs simple antiguo:`);
-  console.log(`    Suma simple antiguo      ${sumaAntigua2.toFixed(1)}`);
-  console.log(`    Suma RR_ESTACIONAL       ${sumaRRE.toFixed(1)}`);
-  console.log(`    Cambio porcentual        ${cambioPctRRE >= 0 ? "+" : ""}${cambioPctRRE.toFixed(2)}%`);
-  console.log("──────────────────────────────────────────");
+  logDebug(`  Portafolio RUNRATE_ESTACIONAL vs simple antiguo:`);
+  logDebug(`    Suma simple antiguo      ${sumaAntigua2.toFixed(1)}`);
+  logDebug(`    Suma RR_ESTACIONAL       ${sumaRRE.toFixed(1)}`);
+  logDebug(`    Cambio porcentual        ${cambioPctRRE >= 0 ? "+" : ""}${cambioPctRRE.toFixed(2)}%`);
+  logDebug("──────────────────────────────────────────");
 
   // ── 2.9b. Reporte de validación final ─────────────────────────────────────
   {
@@ -1012,9 +1015,9 @@ function buildData() {
       tipoStats[t].pesoRR += totalRRAdj2 > 0 ? d.runrateAdj / totalRRAdj2 : 0;
     }
     // ── 1. Distribución final ──────────────────────────────────────────────
-    console.log("══ REPORTE VALIDACIÓN FINAL ═══════════════════════════════");
-    console.log("\n── 1. Distribución final de tipos ──────────────────────────");
-    console.log("  Tipo             SKUs   % Portafolio  Fórmula          Cap");
+    logDebug("══ REPORTE VALIDACIÓN FINAL ═══════════════════════════════");
+    logDebug("\n── 1. Distribución final de tipos ──────────────────────────");
+    logDebug("  Tipo             SKUs   % Portafolio  Fórmula          Cap");
     const tipoMeta: Record<string, { formula: string; cap: string }> = {
       CONTINUA:     { formula: "0.7×L3 + 0.3×H", cap: "[0.7, 1.5]" },
       INTERMITENTE: { formula: "0.4×L3 + 0.6×H", cap: "[0.6, 1.4]" },
@@ -1022,20 +1025,20 @@ function buildData() {
     };
     for (const [t, s] of Object.entries(tipoStats)) {
       const m = tipoMeta[t];
-      console.log(
+      logDebug(
         `  ${t.padEnd(16)} ${String(s.count).padStart(4)}   ${(s.pesoRR*100).toFixed(1).padStart(5)}%` +
         `  ${m.formula.padEnd(16)}  ${m.cap}`
       );
     }
 
     // ── 2. Validación individual de 4 SKUs ───────────────────────────────
-    console.log("\n── 2. Validación SKUs clave ────────────────────────────────");
-    console.log("  SKU      TIPO          FÓRMULA          CAP         F_RAW   F_EST   RR_ADJ   RR_EST  NOMBRE");
+    logDebug("\n── 2. Validación SKUs clave ────────────────────────────────");
+    logDebug("  SKU      TIPO          FÓRMULA          CAP         F_RAW   F_EST   RR_ADJ   RR_EST  NOMBRE");
     for (const id of ["131010", "113005", "112017", "121023"]) {
       const rre = skuRRE[id]; const v = ventasMap[id];
       if (!rre || !v) continue;
       const m = tipoMeta[rre.tipo];
-      console.log(
+      logDebug(
         `  ${id.padEnd(8)} ${rre.tipo.padEnd(13)} ` +
         `${m.formula.padEnd(16)} ${m.cap.padEnd(11)} ` +
         `${rre.factorRaw.toFixed(3).padStart(6)}  ` +
@@ -1065,10 +1068,10 @@ function buildData() {
       ppToInt.push({ id, name: v.name, pctCero, cvNorm, cvAll });
     }
     ppToInt.sort((a, b) => a.pctCero - b.pctCero);
-    console.log(`\n── 3. Muestra PP→INT (${ppToInt.length} SKUs cambiaron) ──────────────────`);
-    console.log("  SKU      %CERO  CV_ALL  CV_NORM  ANTES         AHORA         NOMBRE");
+    logDebug(`\n── 3. Muestra PP→INT (${ppToInt.length} SKUs cambiaron) ──────────────────`);
+    logDebug("  SKU      %CERO  CV_ALL  CV_NORM  ANTES         AHORA         NOMBRE");
     for (const x of ppToInt.slice(0, 5)) {
-      console.log(
+      logDebug(
         `  ${x.id.padEnd(8)} ${(x.pctCero*100).toFixed(0).padStart(4)}%` +
         `  ${x.cvAll.toFixed(2).padStart(6)}` +
         `  ${x.cvNorm.toFixed(2).padStart(7)}` +
@@ -1077,11 +1080,11 @@ function buildData() {
     }
 
     // ── 4. Cambio porcentual definitivo ──────────────────────────────────
-    console.log(`\n── 4. Cambio porcentual agregado DEFINITIVO ─────────────────`);
-    console.log(`   Suma simple antiguo (baseline):    ${sumaAntigua2.toFixed(1)}`);
-    console.log(`   Suma RUNRATE_ESTACIONAL final:     ${sumaRRE.toFixed(1)}`);
-    console.log(`   Δ% definitivo vs antiguo:          ${cambioPctRRE >= 0 ? "+" : ""}${cambioPctRRE.toFixed(2)}%`);
-    console.log("──────────────────────────────────────────");
+    logDebug(`\n── 4. Cambio porcentual agregado DEFINITIVO ─────────────────`);
+    logDebug(`   Suma simple antiguo (baseline):    ${sumaAntigua2.toFixed(1)}`);
+    logDebug(`   Suma RUNRATE_ESTACIONAL final:     ${sumaRRE.toFixed(1)}`);
+    logDebug(`   Δ% definitivo vs antiguo:          ${cambioPctRRE >= 0 ? "+" : ""}${cambioPctRRE.toFixed(2)}%`);
+    logDebug("──────────────────────────────────────────");
   }
 
 
@@ -1152,20 +1155,20 @@ function buildData() {
   }
 
   // Diagnóstico — 4 SKUs testigo
-  console.log("══ CORREDOR P50/P75/P90 — VALIDACIÓN ══════════════════════");
+  logDebug("══ CORREDOR P50/P75/P90 — VALIDACIÓN ══════════════════════");
   for (const id of ["131010","113005","112017","121023"]) {
     const c = corredorMap[id]; const v2 = ventasMap[id]; const rre = skuRRE[id];
     if (!c || !v2 || !rre) continue;
     const lts = leadTimesMap[id] ?? [];
     const ltR = lts.length ? Math.round(lts.reduce((a,b)=>a+b,0)/lts.length) : 60;
-    console.log(`\n── SKU ${id} — ${v2.name.substring(0, 36)}`);
-    console.log(`   Tipo: ${(tipoDemandaMap[id]??'').padEnd(14)} LT_REAL: ${ltR} días`);
-    console.log(`   RRE: ${rre.runrateEstacional.toFixed(1).padStart(8)}  CV_NORM: ${(cvNormMap[id]??0).toFixed(3)}  CV_CAP: ${c.cvCap.toFixed(3)}`);
-    console.log(`   F_P50: ${c.fP50.toFixed(3)}  F_P75: ${c.fP75.toFixed(3)}  F_P90: ${c.fP90.toFixed(3)}  COB_MESES: ${c.cobMeses}`);
-    console.log(`   COVER:    P50=${String(c.coverP50).padStart(6)}  P75=${String(c.coverP75).padStart(6)}  P90=${String(c.coverP90).padStart(6)}`);
-    console.log(`   INV_ACT: ${String(c.invActual).padStart(6)}  CONSUMO_LT: ${String(c.consumoLT).padStart(7)}  INV_ARRIBO: ${String(c.invArribo).padStart(7)}`);
-    console.log(`   SUG:      P50=${String(c.sugP50).padStart(6)}  P75=${String(c.sugP75).padStart(6)}  P90=${String(c.sugP90).padStart(6)}`);
-    console.log(`   DEFAULT: ${c.escenarioDefault}  →  SUGERIDO_FINAL: ${c.sugeridoFinal}  |  ANCHO: ${c.anchoCorredor}%`);
+    logDebug(`\n── SKU ${id} — ${v2.name.substring(0, 36)}`);
+    logDebug(`   Tipo: ${(tipoDemandaMap[id]??'').padEnd(14)} LT_REAL: ${ltR} días`);
+    logDebug(`   RRE: ${rre.runrateEstacional.toFixed(1).padStart(8)}  CV_NORM: ${(cvNormMap[id]??0).toFixed(3)}  CV_CAP: ${c.cvCap.toFixed(3)}`);
+    logDebug(`   F_P50: ${c.fP50.toFixed(3)}  F_P75: ${c.fP75.toFixed(3)}  F_P90: ${c.fP90.toFixed(3)}  COB_MESES: ${c.cobMeses}`);
+    logDebug(`   COVER:    P50=${String(c.coverP50).padStart(6)}  P75=${String(c.coverP75).padStart(6)}  P90=${String(c.coverP90).padStart(6)}`);
+    logDebug(`   INV_ACT: ${String(c.invActual).padStart(6)}  CONSUMO_LT: ${String(c.consumoLT).padStart(7)}  INV_ARRIBO: ${String(c.invArribo).padStart(7)}`);
+    logDebug(`   SUG:      P50=${String(c.sugP50).padStart(6)}  P75=${String(c.sugP75).padStart(6)}  P90=${String(c.sugP90).padStart(6)}`);
+    logDebug(`   DEFAULT: ${c.escenarioDefault}  →  SUGERIDO_FINAL: ${c.sugeridoFinal}  |  ANCHO: ${c.anchoCorredor}%`);
   }
 
   // Diagnóstico — resumen portafolio
@@ -1177,16 +1180,16 @@ function buildData() {
   const anchoEst  = allC.filter(c=>c.anchoCorredor < 50).length;
   const anchoMed  = allC.filter(c=>c.anchoCorredor >= 50 && c.anchoCorredor <= 80).length;
   const anchoAlt  = allC.filter(c=>c.anchoCorredor > 80).length;
-  console.log("\n── Portafolio — Corredor Agregado ──────────────────────────");
-  console.log(`   Suma SUG_P50:                  ${sumSugP50.toLocaleString()}`);
-  console.log(`   Suma SUG_P75:                  ${sumSugP75.toLocaleString()}`);
-  console.log(`   Suma SUG_P90:                  ${sumSugP90.toLocaleString()}`);
-  console.log(`   Suma SUGERIDO_FINAL (default): ${sumFinal.toLocaleString()}`);
-  console.log(`\n   Distribución ANCHO_CORREDOR:`);
-  console.log(`     <50%   estable:              ${anchoEst} SKUs`);
-  console.log(`     50-80% volatilidad media:    ${anchoMed} SKUs`);
-  console.log(`     >80%   alta incertidumbre:   ${anchoAlt} SKUs`);
-  console.log("──────────────────────────────────────────");
+  logDebug("\n── Portafolio — Corredor Agregado ──────────────────────────");
+  logDebug(`   Suma SUG_P50:                  ${sumSugP50.toLocaleString()}`);
+  logDebug(`   Suma SUG_P75:                  ${sumSugP75.toLocaleString()}`);
+  logDebug(`   Suma SUG_P90:                  ${sumSugP90.toLocaleString()}`);
+  logDebug(`   Suma SUGERIDO_FINAL (default): ${sumFinal.toLocaleString()}`);
+  logDebug(`\n   Distribución ANCHO_CORREDOR:`);
+  logDebug(`     <50%   estable:              ${anchoEst} SKUs`);
+  logDebug(`     50-80% volatilidad media:    ${anchoMed} SKUs`);
+  logDebug(`     >80%   alta incertidumbre:   ${anchoAlt} SKUs`);
+  logDebug("──────────────────────────────────────────");
 
   // ── 2.9d. Gobernanza del contenedor ────────────────────────────────────────
   interface GoberData {
@@ -1257,88 +1260,88 @@ function buildData() {
 
   // ── Validación 1: Ancho promedio por tipo en SKUs con ancho > 80% ──
   const tiposPosibles = ["CONTINUA","INTERMITENTE","POR_PROYECTO"] as const;
-  console.log("\n── Validación 1: ANCHO promedio por tipo (SKUs ancho >80%) ──");
+  logDebug("\n── Validación 1: ANCHO promedio por tipo (SKUs ancho >80%) ──");
   for (const t of tiposPosibles) {
     const grupo = Object.entries(corredorMap)
       .filter(([id, c]) => (tipoDemandaMap[id] ?? "CONTINUA") === t && c.anchoCorredor > 80);
     const prom = grupo.length ? grupo.reduce((s,[,c])=>s+c.anchoCorredor,0)/grupo.length : 0;
-    console.log(`   ${t.padEnd(15)} ${grupo.length} SKUs  |  Ancho prom: ${prom.toFixed(1)}%`);
+    logDebug(`   ${t.padEnd(15)} ${grupo.length} SKUs  |  Ancho prom: ${prom.toFixed(1)}%`);
   }
 
   // ── Validación 2: SKUs en "modo reposo" (SUGERIDO_FINAL < 10) por tipo ──
-  console.log("\n── Validación 2: SKUs en modo reposo (SUGERIDO_FINAL < 10) ──");
+  logDebug("\n── Validación 2: SKUs en modo reposo (SUGERIDO_FINAL < 10) ──");
   for (const t of tiposPosibles) {
     const grupo = Object.entries(corredorMap)
       .filter(([id, c]) => (tipoDemandaMap[id] ?? "CONTINUA") === t && c.sugeridoFinal < 10);
-    console.log(`   ${t.padEnd(15)} ${grupo.length} SKUs`);
+    logDebug(`   ${t.padEnd(15)} ${grupo.length} SKUs`);
   }
 
   // ── Validación 3: Top 10 SKUs por SUGERIDO_FINAL ──
-  console.log("\n── Validación 3: Top 10 SKUs por SUGERIDO_FINAL ──");
+  logDebug("\n── Validación 3: Top 10 SKUs por SUGERIDO_FINAL ──");
   const top10 = Object.entries(corredorMap)
     .sort((a,b) => b[1].sugeridoFinal - a[1].sugeridoFinal)
     .slice(0, 10);
-  console.log("   Código       Tipo           Inv.Act  Sug.Final  Escenario  Nombre");
+  logDebug("   Código       Tipo           Inv.Act  Sug.Final  Escenario  Nombre");
   for (const [id, c] of top10) {
     const tipo = tipoDemandaMap[id] ?? "CONTINUA";
     const nombre = (ventasMap[id]?.name ?? "").substring(0, 30);
-    console.log(`   ${id.padEnd(12)} ${tipo.padEnd(15)} ${String(c.invActual).padStart(7)}  ${String(c.sugeridoFinal).padStart(9)}  ${c.escenarioDefault.padEnd(9)}  ${nombre}`);
+    logDebug(`   ${id.padEnd(12)} ${tipo.padEnd(15)} ${String(c.invActual).padStart(7)}  ${String(c.sugeridoFinal).padStart(9)}  ${c.escenarioDefault.padEnd(9)}  ${nombre}`);
   }
-  console.log("──────────────────────────────────────────");
+  logDebug("──────────────────────────────────────────");
 
   // ── Gobernanza — Diagnóstico 1: distribución por ZONA ──
-  console.log("\n══ GOBERNANZA CONTENEDOR ════════════════════════════════════");
+  logDebug("\n══ GOBERNANZA CONTENEDOR ════════════════════════════════════");
   const zonas = ["PELIGRO","CONFORT","OPORTUNIDAD"] as const;
-  console.log("\n── Diag 1: SKUs por ZONA ──────────────────────────────────");
+  logDebug("\n── Diag 1: SKUs por ZONA ──────────────────────────────────");
   for (const z of zonas) {
     const g = Object.entries(gobMap).filter(([,d])=>d.zona===z);
     const byCont = tiposPosibles.map(t=>`${t.substring(0,4)}:${g.filter(([id])=>(tipoDemandaMap[id]??'CONTINUA')===t).length}`).join('  ');
-    console.log(`   ${z.padEnd(12)} ${String(g.length).padStart(3)} SKUs   [${byCont}]`);
+    logDebug(`   ${z.padEnd(12)} ${String(g.length).padStart(3)} SKUs   [${byCont}]`);
   }
 
   // ── Gobernanza — Diagnóstico 2: razón de entrada al contenedor ──
-  console.log("\n── Diag 2: Entrada al contenedor ──────────────────────────");
+  logDebug("\n── Diag 2: Entrada al contenedor ──────────────────────────");
   const entran = Object.entries(gobMap).filter(([,d])=>d.entraContenedor);
   const soloPeligro  = entran.filter(([,d])=> d.entraPorPeligro && !d.entraPorDoh && !d.entraPorCategoria);
   const soloDoh      = entran.filter(([,d])=>!d.entraPorPeligro &&  d.entraPorDoh && !d.entraPorCategoria);
   const soloCat      = entran.filter(([,d])=>!d.entraPorPeligro && !d.entraPorDoh &&  d.entraPorCategoria);
   const combinados   = entran.filter(([,d])=>[d.entraPorPeligro,d.entraPorDoh,d.entraPorCategoria].filter(Boolean).length > 1);
-  console.log(`   Total ENTRA_CONTENEDOR:   ${entran.length} SKUs`);
-  console.log(`     Solo PELIGRO:           ${soloPeligro.length}`);
-  console.log(`     Solo DOH<60:            ${soloDoh.length}`);
-  console.log(`     Solo 10% categoría:     ${soloCat.length}`);
-  console.log(`     Combinación (≥2 reglas):${combinados.length}`);
+  logDebug(`   Total ENTRA_CONTENEDOR:   ${entran.length} SKUs`);
+  logDebug(`     Solo PELIGRO:           ${soloPeligro.length}`);
+  logDebug(`     Solo DOH<60:            ${soloDoh.length}`);
+  logDebug(`     Solo 10% categoría:     ${soloCat.length}`);
+  logDebug(`     Combinación (≥2 reglas):${combinados.length}`);
 
   // ── Gobernanza — Diagnóstico 3: comparación de totales ──
   const sumGob = Object.values(gobMap).reduce((s,d)=>s+d.sugeridoGob, 0);
-  console.log("\n── Diag 3: Impacto en portafolio ──────────────────────────");
-  console.log(`   SUGERIDO_FINAL antes gobernanza: ${sumFinal.toLocaleString()}`);
-  console.log(`   SUGERIDO_FINAL después gobernanza: ${sumGob.toLocaleString()}`);
-  console.log(`   Reducción: ${(sumFinal - sumGob).toLocaleString()} unidades (${((1-sumGob/sumFinal)*100).toFixed(1)}%)`);
+  logDebug("\n── Diag 3: Impacto en portafolio ──────────────────────────");
+  logDebug(`   SUGERIDO_FINAL antes gobernanza: ${sumFinal.toLocaleString()}`);
+  logDebug(`   SUGERIDO_FINAL después gobernanza: ${sumGob.toLocaleString()}`);
+  logDebug(`   Reducción: ${(sumFinal - sumGob).toLocaleString()} unidades (${((1-sumGob/sumFinal)*100).toFixed(1)}%)`);
 
   // ── Gobernanza — Diagnóstico 4: 4 SKUs testigo ──
-  console.log("\n── Diag 4: SKUs testigo ────────────────────────────────────");
-  console.log("   Código    Zona         DOH   Entra  Razón                  Sug.Gob");
+  logDebug("\n── Diag 4: SKUs testigo ────────────────────────────────────");
+  logDebug("   Código    Zona         DOH   Entra  Razón                  Sug.Gob");
   for (const id of ["131010","113005","112017","121023"]) {
     const d = gobMap[id]; if (!d) continue;
     const razones = [d.entraPorPeligro?"PELIGRO":"",d.entraPorDoh?"DOH<60":"",d.entraPorCategoria?"10%CAT":""].filter(Boolean).join("+") || "—";
     const dohStr  = d.doh === 9999 ? "∞" : String(d.doh);
-    console.log(`   ${id.padEnd(9)} ${d.zona.padEnd(12)} ${dohStr.padStart(5)}   ${d.entraContenedor?"SÍ":"NO".padEnd(5)}  ${razones.padEnd(22)} ${d.sugeridoGob}`);
+    logDebug(`   ${id.padEnd(9)} ${d.zona.padEnd(12)} ${dohStr.padStart(5)}   ${d.entraContenedor?"SÍ":"NO".padEnd(5)}  ${razones.padEnd(22)} ${d.sugeridoGob}`);
   }
 
   // ── Gobernanza — Diagnóstico 5: REVISAR_PRECIO ──
   const revisar = Object.entries(gobMap).filter(([,d])=>d.revisarPrecio);
-  console.log(`\n── Diag 5: REVISAR_PRECIO — ${revisar.length} SKUs ──────────────────`);
+  logDebug(`\n── Diag 5: REVISAR_PRECIO — ${revisar.length} SKUs ──────────────────`);
   if (revisar.length <= 15) {
     for (const [id, d] of revisar) {
       const rre = skuRRE[id]?.runrateEstacional ?? 0;
       const sortM = [...(ventasMap[id]?.months??[])].sort((a,b)=>b.yearMonth.localeCompare(a.yearMonth));
       const vult  = sortM[0]?.qty ?? 0;
       const mom   = rre > 0 ? (vult/rre).toFixed(2) : "—";
-      console.log(`   ${id.padEnd(9)} momentum=${mom}  ${(ventasMap[id]?.name??"").substring(0,35)}`);
+      logDebug(`   ${id.padEnd(9)} momentum=${mom}  ${(ventasMap[id]?.name??"").substring(0,35)}`);
     }
   }
-  console.log("══════════════════════════════════════════════════════════");
+  logDebug("══════════════════════════════════════════════════════════");
 
   // ── 3. Build supplies list ──
   const supplies = Object.entries(ventasMap).map(([id, v]) => {
@@ -1418,34 +1421,34 @@ function buildData() {
     };
   });
 
-  console.log(`Loaded ${supplies.length} products | ${history.length} monthly sales records`);
+  logDebug(`Loaded ${supplies.length} products | ${history.length} monthly sales records`);
   const withLeadTime = supplies.filter((s) => (leadTimesMap[s.id]?.length ?? 0) > 0).length;
-  console.log(`Lead times from importaciones: ${withLeadTime} products`);
+  logDebug(`Lead times from importaciones: ${withLeadTime} products`);
 
   // ══ VALIDACIÓN INVENTARIO SEMANAL ══════════════════════════════════════════
-  console.log("\n══ VALIDACIÓN INVENTARIO SEMANAL ════════════════════════════");
+  logDebug("\n══ VALIDACIÓN INVENTARIO SEMANAL ════════════════════════════");
 
   // Validación 1 — ESTADO actualizado (ya impreso en 2.5b arriba)
   // Validación 2 — FUENTE_ADJ actualizado (ya impreso en 2.6 arriba)
 
   // Validación 3 — Comparativo demanda total
-  console.log("\n── Validación 3: Demanda recuperada total ───────────────────");
-  console.log(`   DEMANDA_ADJ antes del cambio (baseline):  252,251 unidades`);
-  console.log(`   DEMANDA_ADJ después del cambio:           ${sumAdjusted.toLocaleString()} unidades`);
+  logDebug("\n── Validación 3: Demanda recuperada total ───────────────────");
+  logDebug(`   DEMANDA_ADJ antes del cambio (baseline):  252,251 unidades`);
+  logDebug(`   DEMANDA_ADJ después del cambio:           ${sumAdjusted.toLocaleString()} unidades`);
   const deltaTotal = sumAdjusted - 252251;
-  console.log(`   Δ por ajuste proporcional semanal:        ${deltaTotal >= 0 ? "+" : ""}${deltaTotal.toLocaleString()} unidades`);
+  logDebug(`   Δ por ajuste proporcional semanal:        ${deltaTotal >= 0 ? "+" : ""}${deltaTotal.toLocaleString()} unidades`);
   const mesesAP = Object.values(ventasMap)
     .flatMap(v => v.months)
     .filter(m => m.fuente_adj === "AJUSTE_PROPORCIONAL").length;
-  console.log(`   Meses con AJUSTE_PROPORCIONAL:             ${mesesAP}`);
+  logDebug(`   Meses con AJUSTE_PROPORCIONAL:             ${mesesAP}`);
 
   // Validación 4 — RUNRATE_ESTACIONAL testigo: antes vs después
-  console.log("\n── Validación 4: RUNRATE_ESTACIONAL testigo — antes vs después");
+  logDebug("\n── Validación 4: RUNRATE_ESTACIONAL testigo — antes vs después");
   const testigos4 = ["113005", "121023", "112017", "131010"];
   const tipoMeta4: Record<string, [number, number]> = {
     CONTINUA: [0.7, 0.3], INTERMITENTE: [0.4, 0.6], POR_PROYECTO: [0.2, 0.8],
   };
-  console.log("   SKU       TIPO          RRE_ANTES  RRE_DESPUES      Δ   Meses_AP  NOMBRE");
+  logDebug("   SKU       TIPO          RRE_ANTES  RRE_DESPUES      Δ   Meses_AP  NOMBRE");
   for (const id of testigos4) {
     const v   = ventasMap[id];
     const rre = skuRRE[id];
@@ -1461,7 +1464,7 @@ function buildData() {
     const rreBefore   = rradjBefore * rre.factorEstacional;
     const delta4      = rre.runrateEstacional - rreBefore;
     const ap4         = v.months.filter(m => m.fuente_adj === "AJUSTE_PROPORCIONAL").length;
-    console.log(
+    logDebug(
       `   ${id.padEnd(9)} ${tipo.padEnd(13)} ` +
       `${rreBefore.toFixed(1).padStart(9)}  ${rre.runrateEstacional.toFixed(1).padStart(11)}  ` +
       `${(delta4 >= 0 ? "+" : "") + delta4.toFixed(1).padStart(5)}  ` +
@@ -1470,7 +1473,7 @@ function buildData() {
   }
 
   // Validación 5 — Top 10 SKUs con mayor aumento en DEMANDA_ADJ total
-  console.log("\n── Validación 5: Top 10 mayor aumento DEMANDA_ADJ (AJUSTE_PROPORCIONAL) ─");
+  logDebug("\n── Validación 5: Top 10 mayor aumento DEMANDA_ADJ (AJUSTE_PROPORCIONAL) ─");
   const deltaDemanda: Array<{ id: string; name: string; delta: number; meses: number; pctProm: number }> = [];
   for (const [id, v] of Object.entries(ventasMap)) {
     let delta = 0; let meses = 0; let sumPct = 0;
@@ -1486,9 +1489,9 @@ function buildData() {
     }
   }
   deltaDemanda.sort((a, b) => b.delta - a.delta);
-  console.log("   SKU       ΔDEMANDA  MESES  PCT_PROM  NOMBRE");
+  logDebug("   SKU       ΔDEMANDA  MESES  PCT_PROM  NOMBRE");
   for (const d of deltaDemanda.slice(0, 10)) {
-    console.log(
+    logDebug(
       `   ${d.id.padEnd(9)} ` +
       `${("+" + d.delta).padStart(8)}  ` +
       `${String(d.meses).padStart(5)}  ` +
@@ -1496,8 +1499,8 @@ function buildData() {
       `${d.name.substring(0, 32)}`
     );
   }
-  console.log(`   (${deltaDemanda.length} SKUs en total con al menos 1 mes AJUSTE_PROPORCIONAL)`);
-  console.log("══════════════════════════════════════════════════════════");
+  logDebug(`   (${deltaDemanda.length} SKUs en total con al menos 1 mes AJUSTE_PROPORCIONAL)`);
+  logDebug("══════════════════════════════════════════════════════════");
 
   return { supplies, history, inventory, weeklyRaw };
 }
@@ -1816,10 +1819,10 @@ function buildPerformanceReport() {
     });
   }
 
-  console.log(`\n══ PERFORMANCE BACKTESTING (corte ${CUTOFF}) ═══════════════`);
-  console.log(`  SKUs evaluados: ${details.length}  |  Error crítico: ${kpi1.toFixed(1)}%  |  Error RunRate: ${kpi3.total}%`);
-  console.log(`  Matriz: PELIGRO(+${cm.PELIGRO.quebro}/-${cm.PELIGRO.noQuebro})  CONFORT(+${cm.CONFORT.quebro}/-${cm.CONFORT.noQuebro})  OPORTUNIDAD(+${cm.OPORTUNIDAD.quebro}/-${cm.OPORTUNIDAD.noQuebro})`);
-  console.log("══════════════════════════════════════════════════════════");
+  logDebug(`\n══ PERFORMANCE BACKTESTING (corte ${CUTOFF}) ═══════════════`);
+  logDebug(`  SKUs evaluados: ${details.length}  |  Error crítico: ${kpi1.toFixed(1)}%  |  Error RunRate: ${kpi3.total}%`);
+  logDebug(`  Matriz: PELIGRO(+${cm.PELIGRO.quebro}/-${cm.PELIGRO.noQuebro})  CONFORT(+${cm.CONFORT.quebro}/-${cm.CONFORT.noQuebro})  OPORTUNIDAD(+${cm.OPORTUNIDAD.quebro}/-${cm.OPORTUNIDAD.noQuebro})`);
+  logDebug("══════════════════════════════════════════════════════════");
 
   return {cutoff:CUTOFF,skuCount:details.length,confusionMatrix:cm,kpi1ErrorCritico:Number(kpi1.toFixed(1)),kpi2Cobertura:kpi2,kpi3ErrorRunrate:kpi3,top10FallosGraves:top10Fallos,top10Sobreestimaciones:top10Sobre,resumenPorTipo:resumen,skuDetails:details,monthlyTimeSeries,skuTimeSeries};
 }
@@ -1829,12 +1832,34 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 8080;
   const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:3000";
+  // Detrás de CloudFront / App Runner, confiar en el primer proxy para que
+  // req.ip refleje X-Forwarded-For del cliente real (necesario para rate-limit).
+  app.set("trust proxy", 1);
   app.use(cors({ origin: CORS_ORIGIN }));
   app.use(express.json({ limit: "5mb" }));
 
+  // ── Middleware de métricas: latencia por request, sin contenido ─────
+  app.use((req, res, next) => {
+    if (!req.path.startsWith("/api/")) return next();
+    const startedAt = Date.now();
+    res.on("finish", () => {
+      // Ruta limpia: si es /api/weekly?... usamos solo el pathname
+      const route = req.path.split("?")[0];
+      recordMetric({
+        ts: nowIso(),
+        event: "request",
+        method: req.method,
+        route,
+        status: res.statusCode,
+        duration_ms: Date.now() - startedAt,
+      });
+    });
+    next();
+  });
+
   // ── Rutas públicas (sin token) ──────────────────────────────────────
   app.get("/api/health", (_req, res) => res.json({ ok: true, service: "grafistock-backend" }));
-  app.use("/api/login", loginRouter);
+  app.use("/api/login", loginRateLimiter, loginRouter);
 
   // ── Middleware de autenticación: TODO lo que sigue requiere JWT ─────
   app.use("/api", requireAuth);
