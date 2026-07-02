@@ -89,15 +89,11 @@ function getYearMonth(fechaOrden: string): string {
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState<boolean>(() => auth.isAuthenticated());
-  if (!authed) {
-    return <Login onSuccess={() => setAuthed(true)} />;
-  }
-
-  return <Dashboard onLogout={() => { auth.clearToken(); setAuthed(false); }} />;
+  // Sin login: acceso directo (autenticación deshabilitada por pedido del usuario).
+  return <Dashboard />;
 }
 
-function Dashboard({ onLogout }: { onLogout: () => void }) {
+function Dashboard() {
   const [supplies, setSupplies] = useState<Supply[]>([]);
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [inventory, setInventory] = useState<InventoryRecord[]>([]);
@@ -434,13 +430,6 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
             <Ship className="w-3 h-3 mr-2 text-blue-600" />
             Import Mode: Active
           </Badge>
-          <button
-            onClick={onLogout}
-            className="text-[11px] font-semibold text-gray-500 hover:text-orange-600 px-3 py-1.5 rounded-lg border border-gray-200 hover:border-orange-200 transition-colors"
-            title="Cerrar sesión"
-          >
-            Cerrar sesión
-          </button>
           <div className="w-8 h-8 rounded-full bg-gray-200 border border-gray-300" />
         </div>
       </header>

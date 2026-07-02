@@ -1863,8 +1863,9 @@ async function startServer() {
   app.get("/api/health", (_req, res) => res.json({ ok: true, service: "grafistock-backend" }));
   app.use("/api/login", loginRateLimiter, loginRouter);
 
-  // ── Middleware de autenticación: TODO lo que sigue requiere JWT ─────
-  app.use("/api", requireAuth);
+  // Autenticación deshabilitada por pedido del usuario: acceso directo sin login.
+  // (Para reactivarla: descomentar la línea de abajo y restaurar el login en el frontend.)
+  // app.use("/api", requireAuth);
 
   const { supplies, history, inventory, weeklyRaw } = buildData();
 

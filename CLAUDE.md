@@ -101,9 +101,14 @@ cd backend && npm install && npm start
 cd frontend && npm install && npm run dev
 ```
 
-Login demo: usuario/clave en `backend/.env` (ADMIN_USER / ADMIN_PASSWORD).
-`backend/.env` NO está en el repo (tiene secretos: ANTHROPIC_API_KEY, JWT_SECRET,
-ADMIN_*). Cópialo desde `.env.example` y pon las claves reales.
+**Login: DESHABILITADO** (por pedido del usuario, 2026-07-02) — acceso directo, sin
+usuario ni contraseña. Para reactivarlo: descomentar `app.use("/api", requireAuth)` en
+`backend/src/index.ts` y restaurar el login en `frontend/src/App.tsx` (el componente
+`Login` y el `auth` gate siguen en el código).
+
+`backend/.env` NO está en el repo (secretos). Lo único imprescindible ahora es
+`ANTHROPIC_API_KEY` (para `/api/conversar`); `JWT_SECRET`/`ADMIN_*` ya no se usan con el
+login apagado. Cópialo desde `.env.example`.
 
 ### Gotchas conocidos
 - **Windows: `npm start` deja un `node` huérfano** que sobrevive y bloquea el puerto
