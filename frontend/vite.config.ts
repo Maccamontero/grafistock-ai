@@ -12,6 +12,8 @@ export default defineConfig(() => ({
   },
   server: {
     port: 3000,
+    host: true,              // escucha en 0.0.0.0 (necesario en Codespaces/contenedores)
+    allowedHosts: true,      // permite el dominio reenviado de Codespaces (*.app.github.dev)
     proxy: {
       '/api': 'http://localhost:3001',
     },

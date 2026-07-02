@@ -101,6 +101,12 @@ cd backend && npm install && npm start
 cd frontend && npm install && npm run dev
 ```
 
+**En GitHub Codespaces** (forma recomendada para trabajar desde cualquier equipo sin
+instalar nada): crear codespace desde el repo → `cp backend/.env.example backend/.env` y
+poner el `ANTHROPIC_API_KEY` real → correr backend y frontend como arriba (en dos
+terminales) → Codespaces reenvía el puerto 3000 ("Open in Browser"). `vite.config.ts` ya
+tiene `host:true` y `allowedHosts:true` para que el dominio `*.app.github.dev` cargue bien.
+
 **Login: DESHABILITADO** (por pedido del usuario, 2026-07-02) — acceso directo, sin
 usuario ni contraseña. Para reactivarlo: descomentar `app.use("/api", requireAuth)` en
 `backend/src/index.ts` y restaurar el login en `frontend/src/App.tsx` (el componente
