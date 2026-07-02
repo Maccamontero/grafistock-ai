@@ -7,6 +7,21 @@ Stack: React 19 + TypeScript + Tailwind v4 + Vite (frontend) · Express + tsx (b
 
 ---
 
+## 🔄 Mantén este archivo al día (instrucción para Claude)
+
+Este `CLAUDE.md` es el **puente de continuidad** entre sesiones y computadores: Claude
+Code lo lee automáticamente al inicio de cada sesión en este repo. Solo sirve si
+refleja el estado real del proyecto.
+
+**Regla:** cada vez que el usuario pida "commit y push" (o al cerrar una sesión de
+trabajo), ANTES de commitear **actualiza este archivo** — sobre todo las secciones
+_"Arquitectura"_ (si cambió algo estructural) y _"Decisiones PENDIENTES"_ (lo que se
+resolvió y lo nuevo que queda) — inclúyelo en el mismo commit, y luego haz push. Si no
+hubo cambios de estado, déjalo igual. Mantén el tono conciso y honesto (qué está hecho,
+qué falta, qué gotchas hay).
+
+---
+
 ## ⭐ Contexto de producto (LÉEME PRIMERO)
 
 El usuario (Oscar) construye esto para **su papá, "Don Oscar" (68 años)**, que es
