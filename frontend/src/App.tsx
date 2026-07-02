@@ -17,6 +17,7 @@ import { apiUrl } from "@/src/lib/api";
 import { auth, authFetch } from "@/src/lib/auth";
 import Login from "@/src/Login";
 import Performance from "@/src/Performance";
+import Asistente from "@/src/Asistente";
 import { calculateInventoryMetrics, InventoryStats } from "@/src/lib/inventoryStats";
 import { cleanSupplyChainData, MasterRecord } from "@/src/lib/dataCleaning";
 import { masterProducts, MasterProduct } from "@/src/data/masterProducts";
@@ -112,7 +113,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   // Data Cleaning State
   const [csvInput, setCsvInput] = useState("");
   const [cleanedData, setCleanedData] = useState<MasterRecord[]>([]);
-  const [activeTab, setActiveTab] = useState("dashboard");
+  const [activeTab, setActiveTab] = useState("asistente");
   const [selectedMasterProducts, setSelectedMasterProducts] = useState<string[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -448,6 +449,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <div className="flex items-center justify-between">
             <TabsList className="bg-gray-100 p-1">
+              <TabsTrigger value="asistente" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                <BrainCircuit className="w-4 h-4 mr-2" />
+                Asistente
+              </TabsTrigger>
               <TabsTrigger value="dashboard" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
                 <TrendingUp className="w-4 h-4 mr-2" />
                 Dashboard Predictivo
@@ -462,6 +467,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               </TabsTrigger>
             </TabsList>
           </div>
+
+          <TabsContent value="asistente">
+            <Asistente onOpenDashboard={() => setActiveTab("dashboard")} />
+          </TabsContent>
 
           <TabsContent value="dashboard">
             <div className="space-y-4">

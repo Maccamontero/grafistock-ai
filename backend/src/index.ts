@@ -6,6 +6,8 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import Papa from "papaparse";
 import { analyzeRouter } from "./routes/analyze.ts";
+import { createSemanaRouter } from "./routes/semana.ts";
+import { createConversarRouter } from "./routes/conversar.ts";
 import { loginRouter } from "./routes/login.ts";
 import { requireAuth } from "./middleware/auth.ts";
 import { loginRateLimiter } from "./middleware/rate-limit.ts";
@@ -1873,6 +1875,69 @@ async function startServer() {
   // Performance backtesting — computado una sola vez al arrancar
   const performanceReport = buildPerformanceReport();
   app.get("/api/performance", (_req, res) => res.json(performanceReport));
+
+  // Resumen semanal descriptivo (capa de presentación, no recalcula el modelo)
+  const nombrePorId: Record<string, string> = {};
+  for (const s of supplies) nombrePorId[s.id] = s.name;
+  app.use("/api/semana", createSemanaRouter({ weeklyRaw, nombrePorId }));
+
+  // ── Inventario actual + órdenes en tránsito por producto (HECHOS, no proyección)
+  // Referencia "hoy" = última fecha con dato semanal (la data es un corte histórico).
+  let refDate = "";
+  for (const arr of Object.values(weeklyRaw)) {
+    for (const p of arr) if (p.fecha > refDate) refDate = p.fecha;
+  }
+  const leadPorId: Record<string, number> = {};
+  for (const s of supplies) leadPorId[s.id] = s.leadTimeDays;
+
+  const datosActuales: Record<string, {
+    stockActual: number;
+    tipo: string;
+    leadTimeDias: number;
+    enTransito: { cantidad: number; proveedor: string; llega: string }[];
+    pedidosRecientes: { cantidad: number; proveedor: string; ordenado: string; llego: string }[];
+  }> = {};
+  for (const inv of inventory) {
+    const serie = [...(weeklyRaw[inv.itemId] ?? [])].sort((a, b) => a.fecha.localeCompare(b.fecha));
+    const stockActual = serie.length ? serie[serie.length - 1].inventario : inv.stock;
+
+    const seen = new Set<string>();
+    const enTransito: { cantidad: number; proveedor: string; llega: string }[] = [];
+    const todos: { cantidad: number; proveedor: string; ordenado: string; llego: string; _s: number }[] = [];
+    for (const orders of Object.values(inv.in_transito ?? {})) {
+      for (const o of orders) {
+        const key = `${o.fechaOrden}|${o.fechaLlegada}|${o.proveedor}|${o.cantidad}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const llegada = parseDate(o.fechaLlegada);
+        const orden = parseDate(o.fechaOrden);
+        const llegadaIso = llegada ? llegada.toISOString().substring(0, 10) : "";
+        const ordenIso = orden ? orden.toISOString().substring(0, 10) : "";
+        // En tránsito: ya ordenada (orden ≤ hoy) y aún no llega (llegada > hoy).
+        if (llegadaIso && llegadaIso > refDate && (!ordenIso || ordenIso <= refDate)) {
+          enTransito.push({ cantidad: o.cantidad, proveedor: o.proveedor, llega: llegadaIso });
+        }
+        // Todos los pedidos (histórico), para responder "qué pedidos se han hecho".
+        todos.push({
+          cantidad: o.cantidad, proveedor: o.proveedor,
+          ordenado: ordenIso || o.fechaOrden, llego: llegadaIso || o.fechaLlegada,
+          _s: orden ? orden.getTime() : 0,
+        });
+      }
+    }
+    todos.sort((a, b) => b._s - a._s);
+    const pedidosRecientes = todos.slice(0, 3).map(({ _s, ...r }) => r);
+
+    datosActuales[inv.itemId] = {
+      stockActual,
+      tipo: inv.tipo_demanda ?? "",
+      leadTimeDias: leadPorId[inv.itemId] ?? 0,
+      enTransito,
+      pedidosRecientes,
+    };
+  }
+
+  app.use("/api/conversar", createConversarRouter({ weeklyRaw, nombrePorId, datosActuales }));
 
   // Weekly inventory per SKU — max 6 months back
   app.get("/api/weekly", (req, res) => {
