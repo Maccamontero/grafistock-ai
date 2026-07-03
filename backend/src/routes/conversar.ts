@@ -37,16 +37,19 @@ function ultimaSalida(series: WeeklyPoint[]): number {
 
 export interface MesPedidos { mes: string; inventario: number; transito: number; pedido: number; }
 
+export interface Orden { orden: string; llegada: string; cantidad: number; }
+
 export interface ConversarDeps {
   weeklyRaw: Record<string, WeeklyPoint[]>;
   nombrePorId: Record<string, string>;
   datosActuales?: Record<string, DatosActuales>;
   serieMensualPorId?: Record<string, MesPedidos[]>;
+  ordenesPorId?: Record<string, Orden[]>;
   config?: Partial<SignalConfig>;
 }
 
 // ── Gráfico COMBINADO (varias medidas cruzadas en un mismo gráfico) ──────────
-export type CampoCombinado = "inventario" | "salidas" | "promedio_movil";
+export type CampoCombinado = "inventario" | "salidas" | "promedio_movil" | "transito";
 export type FormaSerie = "barra" | "linea" | "area";
 export interface SerieSpec {
   dato: CampoCombinado;
@@ -60,6 +63,7 @@ const CAMPO_META: Record<CampoCombinado, { etiqueta: string; color: string; eje:
   inventario:     { etiqueta: "Inventario disponible", color: "#0f766e", eje: "der" },
   salidas:        { etiqueta: "Salidas por semana",    color: "#ea580c", eje: "izq" },
   promedio_movil: { etiqueta: "Promedio móvil (4 sem)", color: "#3b82f6", eje: "izq" },
+  transito:       { etiqueta: "En tránsito",           color: "#16a34a", eje: "der" },
 };
 
 // Un gráfico puede ser de MOVIMIENTO (semanal: salidas + inventario), de PEDIDOS
@@ -70,7 +74,12 @@ type Chart =
   | { tipo: "combinado"; nombre: string; series: SerieSpec[]; puntos: Record<string, number | string>[] };
 
 // Serie semanal con las medidas pedidas (para el gráfico combinado).
-function serieCombinada(series: WeeklyPoint[], campos: CampoCombinado[], nSemanas = 16): Record<string, number | string>[] {
+function serieCombinada(
+  series: WeeklyPoint[],
+  campos: CampoCombinado[],
+  ordenes: { orden: string; llegada: string; cantidad: number }[] = [],
+  nSemanas = 16,
+): Record<string, number | string>[] {
   const ordered = [...series].sort((a, b) => a.fecha.localeCompare(b.fecha));
   const flows = weeklyOutflows(ordered); // alineado a ordered[i+1]
   const sal = flows.map(f => f.salida);
@@ -83,6 +92,12 @@ function serieCombinada(series: WeeklyPoint[], campos: CampoCombinado[], nSemana
     if (campos.includes("inventario"))     p.inventario = Math.round(ordered[i + 1].inventario);
     if (campos.includes("salidas"))        p.salidas = Math.round(f.salida);
     if (campos.includes("promedio_movil")) p.promedio_movil = Math.round(mov[i]);
+    // Nivel en tránsito esa semana: órdenes ya hechas que aún no llegan.
+    if (campos.includes("transito")) {
+      p.transito = ordenes
+        .filter(o => o.orden && o.llegada && o.orden <= f.fecha && f.fecha < o.llegada)
+        .reduce((s, o) => s + o.cantidad, 0);
+    }
     return p;
   });
   return puntos.slice(-nSemanas);
@@ -202,7 +217,7 @@ LA LÍNEA QUE NO CRUZAS — sin proyecciones de tiempo:
 MOSTRAR GRÁFICOS (tienes TRES, elige según lo que pida):
 - mostrar_grafico → MOVIMIENTO reciente: salidas por semana + disponibilidad de inventario. Úsala cuando pida ver el movimiento, las salidas o la disponibilidad reciente de un producto.
 - mostrar_grafico_pedidos → INVENTARIO Y PEDIDOS mes a mes con historia: cuánto inventario ha tenido, cuándo hizo pedidos y qué vino en tránsito. Úsala cuando pida ver los pedidos, las compras, el tránsito, o cómo ha venido el inventario junto con los pedidos.
-- mostrar_grafico_combinado → CRUZAR medidas en un mismo gráfico, cada una como barra o línea. Úsala cuando pida combinar/cruzar, por ejemplo "el inventario en barras con las salidas en líneas", o "las salidas con su promedio móvil". Pasa cada medida con su forma (barra/linea). Medidas: inventario, salidas, promedio_movil.
+- mostrar_grafico_combinado → CRUZAR medidas en un mismo gráfico, cada una como barra o línea. Úsala cuando pida combinar/cruzar, por ejemplo "el inventario en barras con las salidas en líneas", "las salidas con su promedio móvil", o "el inventario con lo que viene en tránsito". Pasa cada medida con su forma (barra/linea). Medidas: inventario, salidas, promedio_movil, transito.
 - NUNCA digas que no puedes mostrar gráficos ni que lo haga en Excel; SÍ puedes.
 - Si te pide varios productos a la vez (por ejemplo "los 3 que más salieron"), LLAMA la herramienta VARIAS VECES, una por cada producto, en la misma respuesta, para mostrárselos TODOS juntos. En tu texto dile que ahí abajo se los muestra.
 
@@ -238,7 +253,7 @@ Responde en texto corrido y natural, sin listas ni viñetas.`;
     },
     {
       name: "mostrar_grafico_combinado",
-      description: "Muestra un gráfico COMBINADO de un producto, donde varias medidas van CRUZADAS en el mismo gráfico, cada una como barra o línea. Úsala cuando pida cruzar/combinar medidas en un solo gráfico, por ejemplo 'el inventario en barras con las salidas en líneas', o agregar un promedio móvil sobre las salidas. Medidas disponibles: inventario (nivel disponible por semana), salidas (por semana), promedio_movil (promedio móvil de 4 semanas de las salidas).",
+      description: "Muestra un gráfico COMBINADO de un producto, donde varias medidas van CRUZADAS en el mismo gráfico, cada una como barra o línea. Úsala cuando pida cruzar/combinar medidas en un solo gráfico, por ejemplo 'el inventario en barras con las salidas en líneas', 'las salidas con su promedio móvil', o 'el inventario con lo que viene en tránsito'. Medidas disponibles: inventario (nivel disponible por semana), salidas (por semana), promedio_movil (promedio móvil de 4 semanas de las salidas), transito (unidades en camino esa semana).",
       input_schema: {
         type: "object" as const,
         properties: {
@@ -249,7 +264,7 @@ Responde en texto corrido y natural, sin listas ni viñetas.`;
             items: {
               type: "object",
               properties: {
-                dato: { type: "string", enum: ["inventario", "salidas", "promedio_movil"] },
+                dato: { type: "string", enum: ["inventario", "salidas", "promedio_movil", "transito"] },
                 forma: { type: "string", enum: ["barra", "linea", "area"] },
               },
               required: ["dato", "forma"],
@@ -356,7 +371,7 @@ Notas: "salidas_esta_ultima_semana" es lo que salió en la semana más reciente.
           series.push({ dato, forma, ...CAMPO_META[dato] });
         }
         if (g && series.length) {
-          const puntos = serieCombinada(deps.weeklyRaw[g.itemId], campos, 16);
+          const puntos = serieCombinada(deps.weeklyRaw[g.itemId], campos, deps.ordenesPorId?.[g.itemId] ?? [], 16);
           charts.push({ tipo: "combinado", nombre: g.nombre, series, puntos });
         }
       }

@@ -79,8 +79,12 @@ tránsito, pedidos, lead time, movimiento) — pero NO lo prescriptivo (zona/sug
   meses, estilo Dashboard Predictivo sin líneas de ventas ni banda de proyección);
   (3) `mostrar_grafico_combinado` = CRUZAR medidas en un mismo gráfico (ComposedChart,
   doble eje): el modelo elige qué medidas y en qué forma (barra/línea/área). Medidas:
-  inventario, salidas, promedio_movil (4 sem). Ej.: "inventario en barras + salidas en
-  líneas". `serieCombinada`/`CAMPO_META` en `conversar.ts`.
+  inventario, salidas, promedio_movil (4 sem), transito. Ventana: 16 semanas recientes.
+  Ej.: "inventario en barras + salidas en líneas". `serieCombinada`/`CAMPO_META` en
+  `conversar.ts`; `ordenesPorId` (armado en `index.ts`) alimenta la medida transito.
+  NOTA: `transito` sale en 0 con los datos actuales (órdenes hasta oct-2025, ventana
+  reciente ene–abr 2026); se enciende con datos frescos. El tránsito histórico se ve
+  en el gráfico de pedidos mensual, no en el combinado semanal.
   Contexto: hechos por producto (stock hoy, en tránsito, pedidos ya hechos, lead time,
   tipo, ranking de lo que más salió). La serie mensual se arma en `index.ts`
   (`serieMensualPorId`) y se pasa al router.

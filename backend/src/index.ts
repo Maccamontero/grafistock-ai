@@ -1906,6 +1906,9 @@ async function startServer() {
     enTransito: { cantidad: number; proveedor: string; llega: string }[];
     pedidosRecientes: { cantidad: number; proveedor: string; ordenado: string; llego: string }[];
   }> = {};
+  // Todas las órdenes (orden/llegada en ISO) por SKU, para calcular el nivel de
+  // tránsito semana a semana en el gráfico combinado.
+  const ordenesPorId: Record<string, { orden: string; llegada: string; cantidad: number }[]> = {};
   for (const inv of inventory) {
     const serie = [...(weeklyRaw[inv.itemId] ?? [])].sort((a, b) => a.fecha.localeCompare(b.fecha));
     const stockActual = serie.length ? serie[serie.length - 1].inventario : inv.stock;
@@ -1934,6 +1937,7 @@ async function startServer() {
         });
       }
     }
+    ordenesPorId[inv.itemId] = todos.map((t) => ({ orden: t.ordenado, llegada: t.llego, cantidad: t.cantidad }));
     todos.sort((a, b) => b._s - a._s);
     const pedidosRecientes = todos.slice(0, 3).map(({ _s, ...r }) => r);
 
@@ -1969,7 +1973,7 @@ async function startServer() {
     });
   }
 
-  app.use("/api/conversar", createConversarRouter({ weeklyRaw, nombrePorId, datosActuales, serieMensualPorId }));
+  app.use("/api/conversar", createConversarRouter({ weeklyRaw, nombrePorId, datosActuales, serieMensualPorId, ordenesPorId }));
 
   // Weekly inventory per SKU — max 6 months back
   app.get("/api/weekly", (req, res) => {

@@ -17,7 +17,7 @@ export interface MesPedidos {
 }
 
 export interface SerieSpec {
-  dato: "inventario" | "salidas" | "promedio_movil";
+  dato: "inventario" | "salidas" | "promedio_movil" | "transito";
   forma: "barra" | "linea" | "area";
   etiqueta: string;
   color: string;
