@@ -155,11 +155,16 @@ login apagado. Cópialo desde `.env.example`.
 
 1. **Re-validar el backtesting tras endurecer `parseDate`** (ver caveat arriba). Correr
    `/api/performance` y comparar contra las métricas de referencia del `README.md`.
-2. **Tránsito vacío con los datos actuales.** Las importaciones del CSV llegan hasta
-   oct-2025, pero el inventario semanal va hasta abr-2026 → no hay pedidos vivos → "en
-   tránsito" siempre dice "nada en camino". Es desfase de frescura de datos, no bug.
-   Se enciende solo al cargar compras con llegadas futuras. (El gráfico de pedidos SÍ
-   muestra el tránsito histórico; lo "vivo" hacia adelante es lo que está vacío.)
+2. **Tránsito vacío con los datos actuales — EN PROCESO DE RESOLVERSE.** Las
+   importaciones del CSV llegan hasta oct-2025, pero el inventario semanal va hasta
+   abr-2026 → no hay pedidos vivos → "en tránsito" dice "nada en camino". Es desfase de
+   frescura de datos, no bug. **Oscar está actualizando `backend/data/Importaciones
+   consolidadas csv.csv` con las órdenes reales en curso (a partir de 2026-07-03).**
+   Cuando lleguen, se encienden solas TRES funciones ya construidas: (a) "en tránsito"
+   en la conversación ("vienen X del proveedor Y"), (b) la medida `transito` del gráfico
+   combinado, (c) el tránsito reciente en el gráfico de pedidos. No requieren código
+   nuevo. Ojo: el CSV debe quedar con fechas parseables (guiones o barras, ambos ok tras
+   endurecer `parseDate`) y con `FECHA DE LLEGADA` futura para que cuente como "vivo".
 
 ---
 
