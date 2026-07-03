@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Loader2, TrendingUp, TrendingDown, Minus, ArrowRight, Send } from "lucide-react";
-import { BarChart, Bar, AreaChart, Area, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { BarChart, Bar, AreaChart, Area, ComposedChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { fetchSemana, SemanaResponse, Titular, PaceEstado } from "@/src/lib/semana";
 import { conversar, ChatMsg, Grafico } from "@/src/lib/conversar";
 
@@ -140,11 +140,38 @@ function GraficoPedidos({ chart }: { chart: Extract<Grafico, { tipo: "pedidos" }
   );
 }
 
+// Gráfico COMBINADO: varias medidas cruzadas en un mismo gráfico, cada una como
+// barra o línea. Doble eje (inventario a la derecha, salidas/promedio a la izq).
+function GraficoCombinado({ chart }: { chart: Extract<Grafico, { tipo: "combinado" }> }) {
+  const data = chart.puntos.map((p) => ({ ...p, x: etiquetaSemana(String(p.x)) }));
+  const usaIzq = chart.series.some((s) => s.eje === "izq");
+  const usaDer = chart.series.some((s) => s.eje === "der");
+  return (
+    <div className="mt-3 space-y-2 rounded-xl border border-gray-200 bg-white p-3">
+      <p className="text-sm font-semibold text-slate-700">{chart.nombre}</p>
+      <ResponsiveContainer width="100%" height={240}>
+        <ComposedChart data={data} margin={{ top: 5, right: 8, left: -18, bottom: 0 }}>
+          <XAxis dataKey="x" tick={{ fontSize: 11, fill: "#64748b" }} interval="preserveStartEnd" />
+          {usaIzq && <YAxis yAxisId="izq" orientation="left" tick={{ fontSize: 11, fill: "#64748b" }} allowDecimals={false} />}
+          {usaDer && <YAxis yAxisId="der" orientation="right" tick={{ fontSize: 11, fill: "#64748b" }} allowDecimals={false} />}
+          <Tooltip formatter={(v: any, n: any) => [`${v} rollos`, n]} contentStyle={{ fontSize: 13, borderRadius: 8 }} />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          {chart.series.map((s, i) => {
+            if (s.forma === "barra") return <Bar key={i} yAxisId={s.eje} dataKey={s.dato} name={s.etiqueta} fill={s.color} radius={[3, 3, 0, 0]} />;
+            if (s.forma === "area") return <Area key={i} yAxisId={s.eje} type="monotone" dataKey={s.dato} name={s.etiqueta} stroke={s.color} fill={s.color} fillOpacity={0.2} strokeWidth={2} />;
+            return <Line key={i} yAxisId={s.eje} type="monotone" dataKey={s.dato} name={s.etiqueta} stroke={s.color} strokeWidth={2} dot={false} />;
+          })}
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 // Despachador: elige el gráfico según su tipo.
 function GraficoChart({ chart }: { chart: Grafico }) {
-  return chart.tipo === "pedidos"
-    ? <GraficoPedidos chart={chart} />
-    : <GraficoMovimiento chart={chart} />;
+  if (chart.tipo === "pedidos") return <GraficoPedidos chart={chart} />;
+  if (chart.tipo === "combinado") return <GraficoCombinado chart={chart} />;
+  return <GraficoMovimiento chart={chart} />;
 }
 
 function Burbuja({ msg }: { msg: ChatMsg }) {

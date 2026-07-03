@@ -16,10 +16,20 @@ export interface MesPedidos {
   pedido: number;      // pedido hecho ese mes
 }
 
-// Discriminado por `tipo`: movimiento (semanal) o pedidos (mensual).
+export interface SerieSpec {
+  dato: "inventario" | "salidas" | "promedio_movil";
+  forma: "barra" | "linea" | "area";
+  etiqueta: string;
+  color: string;
+  eje: "izq" | "der";
+}
+
+// Discriminado por `tipo`: movimiento (semanal), pedidos (mensual) o combinado
+// (varias medidas cruzadas en un mismo gráfico).
 export type Grafico =
   | { tipo: "movimiento"; nombre: string; puntos: PuntoMovimiento[] }
-  | { tipo: "pedidos"; nombre: string; meses: MesPedidos[] };
+  | { tipo: "pedidos"; nombre: string; meses: MesPedidos[] }
+  | { tipo: "combinado"; nombre: string; series: SerieSpec[]; puntos: Record<string, number | string>[] };
 
 export interface ChatMsg {
   role: "user" | "assistant";

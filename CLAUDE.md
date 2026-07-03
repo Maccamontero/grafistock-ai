@@ -72,11 +72,15 @@ tránsito, pedidos, lead time, movimiento) — pero NO lo prescriptivo (zona/sug
 - `routes/conversar.ts` (`POST /api/conversar`) — la voz conversacional (Claude Haiku,
   `claude-haiku-4-5-20251001`). Prompt propio alineado a los principios (NO reutilizar
   el de `/api/analyze`, que es prescriptivo). Muestra gráficos por **tool-use** → texto
-  siempre limpio, sin JSON filtrado. Puede varios gráficos a la vez. **Dos gráficos:**
+  siempre limpio, sin JSON filtrado. Puede varios gráficos a la vez. **Tres gráficos:**
   (1) `mostrar_grafico` = MOVIMIENTO semanal (barras de salidas + área de inventario,
   apiladas); (2) `mostrar_grafico_pedidos` = INVENTARIO Y PEDIDOS mensual con historia
   (barras apiladas: inventario azul + tránsito verde + pedido amarillo, últimos 24
-  meses, estilo Dashboard Predictivo sin líneas de ventas ni banda de proyección).
+  meses, estilo Dashboard Predictivo sin líneas de ventas ni banda de proyección);
+  (3) `mostrar_grafico_combinado` = CRUZAR medidas en un mismo gráfico (ComposedChart,
+  doble eje): el modelo elige qué medidas y en qué forma (barra/línea/área). Medidas:
+  inventario, salidas, promedio_movil (4 sem). Ej.: "inventario en barras + salidas en
+  líneas". `serieCombinada`/`CAMPO_META` en `conversar.ts`.
   Contexto: hechos por producto (stock hoy, en tránsito, pedidos ya hechos, lead time,
   tipo, ranking de lo que más salió). La serie mensual se arma en `index.ts`
   (`serieMensualPorId`) y se pasa al router.
