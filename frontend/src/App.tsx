@@ -421,15 +421,11 @@ function Dashboard() {
             <TrendingUp className="text-white w-6 h-6" />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight">GrafiStock AI</h1>
-            <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Inventory Intelligence Platform</p>
+            <h1 className="text-xl font-bold tracking-tight">GrafiStock</h1>
+            <p className="text-xs text-gray-500 font-medium">Asistente de inventario</p>
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <Badge variant="outline" className="px-3 py-1 border-gray-300">
-            <Ship className="w-3 h-3 mr-2 text-blue-600" />
-            Import Mode: Active
-          </Badge>
           <div className="w-8 h-8 rounded-full bg-gray-200 border border-gray-300" />
         </div>
       </header>

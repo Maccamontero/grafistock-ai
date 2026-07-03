@@ -9,10 +9,17 @@ export interface PuntoMovimiento {
   inventario: number;  // inventario disponible al cierre de esa semana
 }
 
-export interface Grafico {
-  nombre: string;
-  puntos: PuntoMovimiento[];
+export interface MesPedidos {
+  mes: string;         // "YYYY-MM"
+  inventario: number;  // stock al cierre del mes
+  transito: number;    // en tránsito (pedido anterior que aún no llega)
+  pedido: number;      // pedido hecho ese mes
 }
+
+// Discriminado por `tipo`: movimiento (semanal) o pedidos (mensual).
+export type Grafico =
+  | { tipo: "movimiento"; nombre: string; puntos: PuntoMovimiento[] }
+  | { tipo: "pedidos"; nombre: string; meses: MesPedidos[] };
 
 export interface ChatMsg {
   role: "user" | "assistant";

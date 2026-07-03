@@ -35,12 +35,21 @@ function ultimaSalida(series: WeeklyPoint[]): number {
   return f.length ? Math.round(f[f.length - 1].salida) : 0;
 }
 
+export interface MesPedidos { mes: string; inventario: number; transito: number; pedido: number; }
+
 export interface ConversarDeps {
   weeklyRaw: Record<string, WeeklyPoint[]>;
   nombrePorId: Record<string, string>;
   datosActuales?: Record<string, DatosActuales>;
+  serieMensualPorId?: Record<string, MesPedidos[]>;
   config?: Partial<SignalConfig>;
 }
+
+// Un gráfico puede ser de MOVIMIENTO (semanal: salidas + inventario) o de
+// PEDIDOS (mensual: inventario + tránsito + pedido).
+type Chart =
+  | { tipo: "movimiento"; nombre: string; puntos: PuntoMovimiento[] }
+  | { tipo: "pedidos"; nombre: string; meses: MesPedidos[] };
 
 interface ChatMsg { role: "user" | "assistant"; content: string; }
 
@@ -153,8 +162,10 @@ LO QUE TIENES (son HECHOS, puedes decirlos con tranquilidad — NUNCA digas "no 
 LA LÍNEA QUE NO CRUZAS — sin proyecciones de tiempo:
 - Puedes decir cuánto tiene hoy y qué viene en camino (eso son hechos). Lo que NO haces es calcular "para cuánto le alcanza" el inventario, ni poner fechas de cuándo se le acabaría, ni cuentas regresivas de demanda. Si Don Oscar te pregunta "¿para cuánto me alcanza?", dale los hechos (cuánto tiene hoy y qué viene en camino) y devuélvele a él la cuenta: esa decisión es suya, porque depende de cómo se mueva el mercado.
 
-MOSTRAR GRÁFICOS:
-- Cuando Don Oscar quiera ver el movimiento, las salidas o la disponibilidad de inventario de un producto ("muéstreme", "quiero ver", "un gráfico", "la disponibilidad"...), usa la herramienta mostrar_grafico con el nombre exacto del producto. NUNCA digas que no puedes mostrar gráficos ni que lo haga en Excel; SÍ puedes, y el gráfico incluye tanto las salidas por semana como la disponibilidad de inventario.
+MOSTRAR GRÁFICOS (tienes DOS, elige según lo que pida):
+- mostrar_grafico → MOVIMIENTO reciente: salidas por semana + disponibilidad de inventario. Úsala cuando pida ver el movimiento, las salidas o la disponibilidad reciente de un producto.
+- mostrar_grafico_pedidos → INVENTARIO Y PEDIDOS mes a mes con historia: cuánto inventario ha tenido, cuándo hizo pedidos y qué vino en tránsito. Úsala cuando pida ver los pedidos, las compras, el tránsito, o cómo ha venido el inventario junto con los pedidos.
+- NUNCA digas que no puedes mostrar gráficos ni que lo haga en Excel; SÍ puedes.
 - Si te pide varios productos a la vez (por ejemplo "los 3 que más salieron"), LLAMA la herramienta VARIAS VECES, una por cada producto, en la misma respuesta, para mostrárselos TODOS juntos. En tu texto dile que ahí abajo se los muestra.
 
 SI NO TIENES EL DATO:
@@ -165,20 +176,29 @@ GUARDRAIL:
 
 Responde en texto corrido y natural, sin listas ni viñetas.`;
 
-  const tools = [{
-    name: "mostrar_grafico",
-    description: "Muestra a Don Oscar un gráfico del movimiento de un producto: las salidas por semana y la disponibilidad de inventario semana a semana. Úsala cuando pida ver, mostrar, un gráfico, una estadística, el movimiento o la disponibilidad de inventario de un producto.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        producto: {
-          type: "string",
-          description: "Nombre exacto del producto (tal como aparece en los datos de la semana).",
-        },
+  const propProducto = {
+    type: "object" as const,
+    properties: {
+      producto: {
+        type: "string",
+        description: "Nombre exacto del producto (tal como aparece en los datos).",
       },
-      required: ["producto"],
     },
-  }];
+    required: ["producto"],
+  };
+
+  const tools = [
+    {
+      name: "mostrar_grafico",
+      description: "Muestra el gráfico de MOVIMIENTO de un producto: las salidas por semana y la disponibilidad de inventario semana a semana. Úsala cuando pida ver el movimiento, las salidas o la disponibilidad reciente de un producto.",
+      input_schema: propProducto,
+    },
+    {
+      name: "mostrar_grafico_pedidos",
+      description: "Muestra el gráfico de INVENTARIO Y PEDIDOS de un producto, mes a mes con historia: cuánto inventario ha tenido, cuándo hizo pedidos (en amarillo) y qué ha venido en tránsito (en verde). Úsala cuando pida ver los pedidos, las compras, el tránsito, o cómo ha venido el inventario junto con los pedidos.",
+      input_schema: propProducto,
+    },
+  ];
 
   router.post("/", async (req, res) => {
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -245,13 +265,20 @@ Notas: "salidas_esta_ultima_semana" es lo que salió en la semana más reciente.
         .join(" ")
         .trim();
 
-      // El modelo puede pedir VARIOS gráficos a la vez (uno por producto).
-      const charts: { nombre: string; puntos: PuntoMovimiento[] }[] = [];
-      const toolUses = bloques.filter(b => b?.type === "tool_use" && b?.name === "mostrar_grafico");
-      for (const tu of toolUses) {
+      // El modelo puede pedir VARIOS gráficos a la vez (uno por producto), y de
+      // dos tipos: movimiento (semanal) o pedidos (mensual).
+      const charts: Chart[] = [];
+      for (const tu of bloques.filter(b => b?.type === "tool_use" && b?.name === "mostrar_grafico")) {
         const g = resolverProducto(String(tu.input?.producto ?? ""));
-        if (g && !charts.some(c => c.nombre === g.nombre)) {
-          charts.push({ nombre: g.nombre, puntos: serieMovimiento(deps.weeklyRaw[g.itemId], 12) });
+        if (g && !charts.some(c => c.tipo === "movimiento" && c.nombre === g.nombre)) {
+          charts.push({ tipo: "movimiento", nombre: g.nombre, puntos: serieMovimiento(deps.weeklyRaw[g.itemId], 12) });
+        }
+      }
+      for (const tu of bloques.filter(b => b?.type === "tool_use" && b?.name === "mostrar_grafico_pedidos")) {
+        const g = resolverProducto(String(tu.input?.producto ?? ""));
+        const meses = g ? (deps.serieMensualPorId?.[g.itemId] ?? []).slice(-24) : [];
+        if (g && meses.length && !charts.some(c => c.tipo === "pedidos" && c.nombre === g.nombre)) {
+          charts.push({ tipo: "pedidos", nombre: g.nombre, meses });
         }
       }
 

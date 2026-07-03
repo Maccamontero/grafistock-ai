@@ -71,11 +71,15 @@ tránsito, pedidos, lead time, movimiento) — pero NO lo prescriptivo (zona/sug
 - `routes/semana.ts` (`GET /api/semana`) — hasta 3 titulares descriptivos de la semana.
 - `routes/conversar.ts` (`POST /api/conversar`) — la voz conversacional (Claude Haiku,
   `claude-haiku-4-5-20251001`). Prompt propio alineado a los principios (NO reutilizar
-  el de `/api/analyze`, que es prescriptivo). Muestra gráficos por **tool-use**
-  (`mostrar_grafico`) → texto siempre limpio, sin JSON filtrado. Puede varios gráficos
-  a la vez. Contexto: hechos por producto (stock hoy, en tránsito, pedidos ya hechos,
-  lead time, tipo, ranking de lo que más salió). Gráfico = barras de salidas/semana +
-  área de inventario disponible, apiladas.
+  el de `/api/analyze`, que es prescriptivo). Muestra gráficos por **tool-use** → texto
+  siempre limpio, sin JSON filtrado. Puede varios gráficos a la vez. **Dos gráficos:**
+  (1) `mostrar_grafico` = MOVIMIENTO semanal (barras de salidas + área de inventario,
+  apiladas); (2) `mostrar_grafico_pedidos` = INVENTARIO Y PEDIDOS mensual con historia
+  (barras apiladas: inventario azul + tránsito verde + pedido amarillo, últimos 24
+  meses, estilo Dashboard Predictivo sin líneas de ventas ni banda de proyección).
+  Contexto: hechos por producto (stock hoy, en tránsito, pedidos ya hechos, lead time,
+  tipo, ranking de lo que más salió). La serie mensual se arma en `index.ts`
+  (`serieMensualPorId`) y se pasa al router.
 - `index.ts` — carga CSVs, calcula el modelo, registra rutas. Arma `datosActuales`
   (inventario actual + tránsito + pedidos) que consume `/api/conversar`.
 
@@ -125,27 +129,29 @@ login apagado. Cópialo desde `.env.example`.
 
 ---
 
+## Resuelto recientemente (2026-07-03)
+
+- **`parseDate` endurecido (era pendiente #1 → HECHO).** Ahora acepta AMBOS formatos:
+  guiones (`29-03-23`, `14-abr-25`) y barras (`06/12/2022`, re-guardado por Excel).
+  Antes botaba en silencio las fechas con barras → pedidos/tránsito/lead times vacíos.
+  ⚠️ CAVEAT VIVO: el lead time alimenta el modelo (corredor/zona/sugerido), así que al
+  aceptar más fechas los números del modelo pueden moverse → **falta re-validar el
+  backtesting** (`/api/performance`) para confirmar que sigue sano. Pendiente de hacer.
+- **Gráfico estilo Dashboard Predictivo (era pendiente #3 → HECHO).** `mostrar_grafico_pedidos`
+  (ver Arquitectura). Se desbloqueó al arreglar el CSV/parser: ya muestra los pedidos y
+  tránsito históricos reales.
+- **Encabezado en español.** "GrafiStock · Asistente de inventario" (antes "Inventory
+  Intelligence Platform"); se quitó el badge "Import Mode: Active".
+
 ## Decisiones PENDIENTES (retomar aquí)
 
-1. **`parseDate` no entiende fechas con barras.** El CSV `backend/data/Importaciones
-   consolidadas csv.csv` a veces se re-guarda desde Excel/OneDrive con fechas
-   `06/12/2022` (barras) en vez de `29-03-23` (guiones). `parseDate` (en `index.ts`)
-   **solo entiende guiones** → descarta las órdenes en silencio → pedidos/tránsito/lead
-   times salen vacíos. El repo tiene el CSV en formato bueno (guiones). Pendiente
-   decidido a medias:
-   - **Opción A (elegida por ahora):** arreglar solo la presentación, sin tocar cálculos.
-   - **Opción B (mejora futura deliberada):** endurecer `parseDate` para aceptar ambos
-     formatos. OJO: el lead time alimenta el modelo (corredor/zona/sugerido) → cambiar
-     el parser MUEVE los números del modelo → re-validar backtesting. Oscar pidió no
-     alterar cálculos a la ligera.
+1. **Re-validar el backtesting tras endurecer `parseDate`** (ver caveat arriba). Correr
+   `/api/performance` y comparar contra las métricas de referencia del `README.md`.
 2. **Tránsito vacío con los datos actuales.** Las importaciones del CSV llegan hasta
    oct-2025, pero el inventario semanal va hasta abr-2026 → no hay pedidos vivos → "en
    tránsito" siempre dice "nada en camino". Es desfase de frescura de datos, no bug.
-   Se enciende solo al cargar compras con llegadas futuras.
-3. **Gráfico estilo Dashboard Predictivo** (stock hoy + tránsito + pedido en amarillo +
-   proyección de llegada), mensual con historia. Oscar lo pidió; quedó pausado por lo
-   del tránsito vacío. Datos: `inventario_mensual` + `in_transito` del objeto de
-   `/api/inventory`.
+   Se enciende solo al cargar compras con llegadas futuras. (El gráfico de pedidos SÍ
+   muestra el tránsito histórico; lo "vivo" hacia adelante es lo que está vacío.)
 
 ---
 

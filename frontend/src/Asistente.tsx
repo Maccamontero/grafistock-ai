@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Loader2, TrendingUp, TrendingDown, Minus, ArrowRight, Send } from "lucide-react";
-import { BarChart, Bar, AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { BarChart, Bar, AreaChart, Area, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { fetchSemana, SemanaResponse, Titular, PaceEstado } from "@/src/lib/semana";
 import { conversar, ChatMsg, Grafico } from "@/src/lib/conversar";
 
@@ -54,7 +54,7 @@ function etiquetaSemana(iso: string): string {
   return p.length === 3 ? `${p[2]}/${p[1]}` : iso;
 }
 
-function GraficoMovimiento({ chart }: { chart: Grafico }) {
+function GraficoMovimiento({ chart }: { chart: Extract<Grafico, { tipo: "movimiento" }> }) {
   const data = chart.puntos.map((p) => ({
     semana: etiquetaSemana(p.semana),
     salidas: p.salidas,
@@ -101,6 +101,52 @@ function GraficoMovimiento({ chart }: { chart: Grafico }) {
   );
 }
 
+// Etiqueta de mes "YYYY-MM" → "abr 25"
+const MESES_CORTO = ["", "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+function etiquetaMes(ym: string): string {
+  const [y, m] = ym.split("-");
+  return m ? `${MESES_CORTO[parseInt(m, 10)] ?? m} ${y?.slice(2) ?? ""}` : ym;
+}
+
+// Gráfico mensual con historia: inventario (azul) + tránsito (verde) + pedido
+// hecho ese mes (amarillo), apilados. Estilo del Dashboard Predictivo, pero sin
+// líneas de ventas ni banda de proyección (para respetar los principios).
+function GraficoPedidos({ chart }: { chart: Extract<Grafico, { tipo: "pedidos" }> }) {
+  const data = chart.meses.map((m) => ({
+    mes: etiquetaMes(m.mes),
+    Inventario: m.inventario,
+    Tránsito: m.transito,
+    Pedido: m.pedido,
+  }));
+  return (
+    <div className="mt-3 space-y-2 rounded-xl border border-gray-200 bg-white p-3">
+      <p className="text-sm font-semibold text-slate-700">{chart.nombre}</p>
+      <p className="text-sm font-medium text-slate-600">Inventario y pedidos por mes</p>
+      <ResponsiveContainer width="100%" height={240}>
+        <BarChart data={data} margin={{ top: 5, right: 8, left: -18, bottom: 0 }}>
+          <XAxis dataKey="mes" tick={{ fontSize: 10, fill: "#64748b" }} interval="preserveStartEnd" />
+          <YAxis tick={{ fontSize: 11, fill: "#64748b" }} allowDecimals={false} />
+          <Tooltip
+            formatter={(v: any, n: any) => [`${v} rollos`, n]}
+            contentStyle={{ fontSize: 13, borderRadius: 8 }}
+          />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Bar dataKey="Inventario" stackId="a" fill="#93c5fd" />
+          <Bar dataKey="Tránsito" stackId="a" fill="#4ade80" />
+          <Bar dataKey="Pedido" stackId="a" fill="#fcd34d" radius={[3, 3, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// Despachador: elige el gráfico según su tipo.
+function GraficoChart({ chart }: { chart: Grafico }) {
+  return chart.tipo === "pedidos"
+    ? <GraficoPedidos chart={chart} />
+    : <GraficoMovimiento chart={chart} />;
+}
+
 function Burbuja({ msg }: { msg: ChatMsg }) {
   const esUsuario = msg.role === "user";
   return (
@@ -114,7 +160,7 @@ function Burbuja({ msg }: { msg: ChatMsg }) {
         }
       >
         {msg.content}
-        {!esUsuario && msg.charts?.map((c, i) => <GraficoMovimiento key={i} chart={c} />)}
+        {!esUsuario && msg.charts?.map((c, i) => <GraficoChart key={i} chart={c} />)}
       </div>
     </div>
   );

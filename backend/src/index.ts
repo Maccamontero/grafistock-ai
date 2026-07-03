@@ -35,9 +35,17 @@ const MONTH_MAP: Record<string, string> = {
   sep: "09", oct: "10", nov: "11", dic: "12",
 };
 
+// Acepta AMBOS formatos de fecha del CSV de importaciones: con guiones
+// ("29-03-23", "14-abr-25") y con barras ("06/12/2022", re-guardado por
+// Excel/OneDrive). Antes solo entendía guiones y descartaba en silencio las
+// fechas con barras → se perdían pedidos/tránsito.
+// OJO: estas fechas alimentan el lead time, que a su vez alimenta el modelo
+// (corredor/zona/sugerido). Al aceptar más fechas, el lead time puede cambiar
+// y con él los números del modelo → conviene re-validar el backtesting.
 function parseDate(raw: string): Date | null {
   const s = raw.trim();
-  const parts = s.split("-");
+  const sep = s.includes("/") ? "/" : "-";
+  const parts = s.split(sep);
   if (parts.length !== 3) return null;
   const [day, mid, yr] = parts;
   const month = MONTH_MAP[mid.toLowerCase()] ?? mid.padStart(2, "0");
@@ -1938,7 +1946,30 @@ async function startServer() {
     };
   }
 
-  app.use("/api/conversar", createConversarRouter({ weeklyRaw, nombrePorId, datosActuales }));
+  // ── Serie mensual para el gráfico estilo Dashboard Predictivo ──────────────
+  // Por mes: inventario (stock), pedido NUEVO (ordenado ese mes, amarillo) y
+  // tránsito (de un pedido anterior que aún no llega, verde). Réplica de la
+  // lógica del dashboard, sin las líneas de ventas ni la banda de proyección.
+  const serieMensualPorId: Record<string, { mes: string; inventario: number; transito: number; pedido: number }[]> = {};
+  for (const inv of inventory) {
+    const invMensual: Record<string, number> = inv.inventario_mensual ?? {};
+    const inTransito = inv.in_transito ?? {};
+    const meses = Object.keys(invMensual).sort();
+    serieMensualPorId[inv.itemId] = meses.map((date) => {
+      const ym = date.substring(0, 7);
+      const orders = inTransito[date] ?? [];
+      let pedido = 0, transito = 0;
+      for (const o of orders) {
+        const od = parseDate(o.fechaOrden);
+        const oym = od ? `${od.getFullYear()}-${String(od.getMonth() + 1).padStart(2, "0")}` : "";
+        if (oym === ym) pedido += o.cantidad;   // pedido hecho este mes (amarillo)
+        else transito += o.cantidad;            // en tránsito de un pedido anterior (verde)
+      }
+      return { mes: ym, inventario: invMensual[date] ?? 0, transito, pedido };
+    });
+  }
+
+  app.use("/api/conversar", createConversarRouter({ weeklyRaw, nombrePorId, datosActuales, serieMensualPorId }));
 
   // Weekly inventory per SKU — max 6 months back
   app.get("/api/weekly", (req, res) => {
