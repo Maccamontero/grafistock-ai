@@ -1954,7 +1954,10 @@ async function startServer() {
   // Por mes: inventario (stock), pedido NUEVO (ordenado ese mes, amarillo) y
   // tránsito (de un pedido anterior que aún no llega, verde). Réplica de la
   // lógica del dashboard, sin las líneas de ventas ni la banda de proyección.
-  const serieMensualPorId: Record<string, { mes: string; inventario: number; transito: number; pedido: number }[]> = {};
+  const serieMensualPorId: Record<string, {
+    mes: string; inventario: number; transito: number; pedido: number;
+    ordenes: { proveedor: string; orden: string; llegada: string; cantidad: number; nueva: boolean }[];
+  }[]> = {};
   for (const inv of inventory) {
     const invMensual: Record<string, number> = inv.inventario_mensual ?? {};
     const inTransito = inv.in_transito ?? {};
@@ -1963,13 +1966,23 @@ async function startServer() {
       const ym = date.substring(0, 7);
       const orders = inTransito[date] ?? [];
       let pedido = 0, transito = 0;
+      // Detalle de cada orden en ese mes (para el popup al hacer click): quién,
+      // cuándo se ordenó, cuándo llega, cuánto. `nueva` = pedido hecho ESE mes.
+      const seen = new Set<string>();
+      const ordenes: { proveedor: string; orden: string; llegada: string; cantidad: number; nueva: boolean }[] = [];
       for (const o of orders) {
         const od = parseDate(o.fechaOrden);
         const oym = od ? `${od.getFullYear()}-${String(od.getMonth() + 1).padStart(2, "0")}` : "";
-        if (oym === ym) pedido += o.cantidad;   // pedido hecho este mes (amarillo)
-        else transito += o.cantidad;            // en tránsito de un pedido anterior (verde)
+        const nueva = oym === ym;
+        if (nueva) pedido += o.cantidad;   // pedido hecho este mes (amarillo)
+        else transito += o.cantidad;       // en tránsito de un pedido anterior (verde)
+        const key = `${o.fechaOrden}|${o.fechaLlegada}|${o.proveedor}|${o.cantidad}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          ordenes.push({ proveedor: o.proveedor, orden: o.fechaOrden, llegada: o.fechaLlegada, cantidad: o.cantidad, nueva });
+        }
       }
-      return { mes: ym, inventario: invMensual[date] ?? 0, transito, pedido };
+      return { mes: ym, inventario: invMensual[date] ?? 0, transito, pedido, ordenes };
     });
   }
 

@@ -87,14 +87,20 @@ tránsito, pedidos, lead time, movimiento) — pero NO lo prescriptivo (zona/sug
   en el gráfico de pedidos mensual, no en el combinado semanal.
   Contexto: hechos por producto (stock hoy, en tránsito, pedidos ya hechos, lead time,
   tipo, ranking de lo que más salió). La serie mensual se arma en `index.ts`
-  (`serieMensualPorId`) y se pasa al router.
+  (`serieMensualPorId`) y se pasa al router. Cada mes lleva además el **detalle de sus
+  órdenes** (`ordenes`: proveedor, fecha de orden, fecha de llegada, cantidad, `nueva`=si
+  el pedido se hizo ese mes) para el popup/tooltip clickeable del frontend. `nueva` marca
+  el pedido amarillo (hecho ese mes) vs el verde (tránsito de uno anterior).
 - `index.ts` — carga CSVs, calcula el modelo, registra rutas. Arma `datosActuales`
   (inventario actual + tránsito + pedidos) que consume `/api/conversar`.
 
 **Frontend** (`frontend/src/`)
 - `Asistente.tsx` — vista principal (primera pestaña, landing por defecto). Saludo a
   Don Oscar, franja de hasta 3 titulares, chat con gráficos apilados. El dashboard
-  viejo (`App.tsx`) queda detrás, intacto.
+  viejo (`App.tsx`) queda detrás, intacto. En el gráfico de pedidos mensual, al **pasar
+  el mouse** por un mes sale un tooltip con sus pedidos (proveedor + cuándo llega) y al
+  **hacer click** se abre el popup grande (`PopupPedidos`) — útil en táctil, donde no hay
+  hover. Igual que el popup del Dashboard Predictivo, pero solo hechos.
 - `lib/semana.ts`, `lib/conversar.ts` — clientes tipados.
 
 El modelo estadístico (imputación, RunRate, corredor P50/P75/P90, gobernanza) está en
@@ -150,6 +156,12 @@ login apagado. Cópialo desde `.env.example`.
   tránsito históricos reales.
 - **Encabezado en español.** "GrafiStock · Asistente de inventario" (antes "Inventory
   Intelligence Platform"); se quitó el badge "Import Mode: Active".
+- **Detalle de pedidos por mes en el gráfico (2026-07-06).** El gráfico
+  `mostrar_grafico_pedidos` ahora deja ver, por mes, **a quién se le pidió y cuándo
+  llega**: al pasar el mouse (tooltip) y al hacer click (popup grande). El backend adjunta
+  `ordenes` a cada mes (desde `in_transito`); no cambia ningún cálculo ni el valor de las
+  barras. Réplica del popup del Dashboard Predictivo, respetando los principios (hechos,
+  sin proyecciones).
 
 ## Decisiones PENDIENTES (retomar aquí)
 

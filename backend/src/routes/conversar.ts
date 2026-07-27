@@ -35,7 +35,8 @@ function ultimaSalida(series: WeeklyPoint[]): number {
   return f.length ? Math.round(f[f.length - 1].salida) : 0;
 }
 
-export interface MesPedidos { mes: string; inventario: number; transito: number; pedido: number; }
+export interface OrdenMes { proveedor: string; orden: string; llegada: string; cantidad: number; nueva: boolean; }
+export interface MesPedidos { mes: string; inventario: number; transito: number; pedido: number; ordenes: OrdenMes[]; }
 
 export interface Orden { orden: string; llegada: string; cantidad: number; }
 

@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-import { Loader2, TrendingUp, TrendingDown, Minus, ArrowRight, Send } from "lucide-react";
+import { Loader2, TrendingUp, TrendingDown, Minus, ArrowRight, Send, Truck, X } from "lucide-react";
 import { BarChart, Bar, AreaChart, Area, ComposedChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { fetchSemana, SemanaResponse, Titular, PaceEstado } from "@/src/lib/semana";
-import { conversar, ChatMsg, Grafico } from "@/src/lib/conversar";
+import { conversar, ChatMsg, Grafico, OrdenMes } from "@/src/lib/conversar";
 
 // ── Vista Asistente (rebanadas 2 + 3) ────────────────────────────────────────
 // Puerta de entrada para Don Oscar: saludo + hasta 3 titulares descriptivos de
@@ -107,35 +107,136 @@ function etiquetaMes(ym: string): string {
   const [y, m] = ym.split("-");
   return m ? `${MESES_CORTO[parseInt(m, 10)] ?? m} ${y?.slice(2) ?? ""}` : ym;
 }
+// "YYYY-MM" → "oct de 24" (para el título del popup)
+function etiquetaMesLargo(ym: string): string {
+  const [y, m] = ym.split("-");
+  return m ? `${MESES_CORTO[parseInt(m, 10)] ?? m} de ${y?.slice(2) ?? ""}` : ym;
+}
+
+// Popup con el detalle de las órdenes de un mes: a quién se le pidió y cuándo
+// llega (hechos). Se abre al hacer click en una barra/mes del gráfico de pedidos.
+function PopupPedidos({ mesLargo, ordenes, onClose }: { mesLargo: string; ordenes: OrdenMes[]; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="flex items-center gap-2 text-base font-semibold text-slate-800">
+            <Truck className="h-5 w-5 text-green-600" />
+            Pedidos en camino — {mesLargo}
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600" aria-label="Cerrar">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="space-y-3">
+          {ordenes.map((o, i) => (
+            <div key={i} className={"space-y-2 rounded-xl border p-4 " + (o.nueva ? "border-yellow-200 bg-yellow-50" : "border-green-100 bg-green-50")}>
+              {o.nueva && (
+                <span className="inline-block rounded-full bg-yellow-400 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-yellow-900">
+                  Pedido nuevo de este mes
+                </span>
+              )}
+              <div className="flex justify-between gap-3 text-sm">
+                <span className="text-slate-500">Proveedor</span>
+                <span className="max-w-[60%] text-right font-semibold text-slate-800">{o.proveedor || "—"}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">Fecha de orden</span>
+                <span className="font-semibold text-slate-800">{o.orden}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">Fecha de llegada</span>
+                <span className={"font-semibold " + (o.nueva ? "text-yellow-700" : "text-blue-700")}>{o.llegada}</span>
+              </div>
+              <div className={"flex justify-between border-t pt-2 text-sm " + (o.nueva ? "border-yellow-200" : "border-green-200")}>
+                <span className="text-slate-500">Cantidad pedida</span>
+                <span className={"text-base font-bold " + (o.nueva ? "text-yellow-700" : "text-green-700")}>{o.cantidad} rollos</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button
+            onClick={onClose}
+            className="rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:border-orange-300 hover:text-orange-700"
+          >
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Tooltip del gráfico de pedidos: al pasar el mouse por un mes muestra el
+// inventario y, si hubo pedidos, a quién se le pidió y cuándo llega (hechos).
+function TooltipPedidos({ active, payload }: any) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload;
+  if (!row) return null;
+  const ordenes: OrdenMes[] = row.ordenes ?? [];
+  return (
+    <div className="max-w-[280px] rounded-lg border border-gray-200 bg-white p-2.5 shadow-lg" style={{ fontSize: 13 }}>
+      <p className="mb-1 font-semibold text-slate-700">{row.mesLargo}</p>
+      <p className="text-slate-600">Inventario: {row.Inventario} rollos</p>
+      {ordenes.length === 0 ? (
+        <p className="mt-1 text-slate-400">Sin pedidos este mes.</p>
+      ) : (
+        <div className="mt-1.5 space-y-1.5">
+          {ordenes.map((o, i) => (
+            <div key={i} className="border-t border-gray-100 pt-1.5">
+              <p className="font-medium text-slate-700">
+                {o.proveedor || "—"}
+                {o.nueva && <span className="ml-1 text-yellow-600">(pedido nuevo)</span>}
+              </p>
+              <p className="text-slate-500">{o.cantidad} rollos · llega {o.llegada}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Gráfico mensual con historia: inventario (azul) + tránsito (verde) + pedido
 // hecho ese mes (amarillo), apilados. Estilo del Dashboard Predictivo, pero sin
 // líneas de ventas ni banda de proyección (para respetar los principios).
+// Al pasar el mouse por un mes se ven sus pedidos (proveedor + llegada); al hacer
+// click se abren en grande (útil en pantallas táctiles, donde no hay "hover").
 function GraficoPedidos({ chart }: { chart: Extract<Grafico, { tipo: "pedidos" }> }) {
+  const [popup, setPopup] = useState<{ mesLargo: string; ordenes: OrdenMes[] } | null>(null);
   const data = chart.meses.map((m) => ({
     mes: etiquetaMes(m.mes),
+    mesLargo: etiquetaMesLargo(m.mes),
+    ordenes: m.ordenes ?? [],
     Inventario: m.inventario,
     Tránsito: m.transito,
     Pedido: m.pedido,
   }));
+  const hayOrdenes = data.some((d) => d.ordenes.length > 0);
+  function abrirMes(e: any) {
+    const row = e?.activePayload?.[0]?.payload;
+    if (row?.ordenes?.length) setPopup({ mesLargo: row.mesLargo, ordenes: row.ordenes });
+  }
   return (
     <div className="mt-3 space-y-2 rounded-xl border border-gray-200 bg-white p-3">
       <p className="text-sm font-semibold text-slate-700">{chart.nombre}</p>
       <p className="text-sm font-medium text-slate-600">Inventario y pedidos por mes</p>
+      {hayOrdenes && (
+        <p className="text-xs text-slate-400">Pasa el mouse por un mes para ver a quién se le pidió y cuándo llega (o haz click para verlo en grande).</p>
+      )}
       <ResponsiveContainer width="100%" height={240}>
-        <BarChart data={data} margin={{ top: 5, right: 8, left: -18, bottom: 0 }}>
+        <BarChart data={data} margin={{ top: 5, right: 8, left: -18, bottom: 0 }} onClick={abrirMes} style={{ cursor: "pointer" }}>
           <XAxis dataKey="mes" tick={{ fontSize: 10, fill: "#64748b" }} interval="preserveStartEnd" />
           <YAxis tick={{ fontSize: 11, fill: "#64748b" }} allowDecimals={false} />
-          <Tooltip
-            formatter={(v: any, n: any) => [`${v} rollos`, n]}
-            contentStyle={{ fontSize: 13, borderRadius: 8 }}
-          />
+          <Tooltip content={<TooltipPedidos />} wrapperStyle={{ zIndex: 40 }} />
           <Legend wrapperStyle={{ fontSize: 12 }} />
           <Bar dataKey="Inventario" stackId="a" fill="#93c5fd" />
           <Bar dataKey="Tránsito" stackId="a" fill="#4ade80" />
           <Bar dataKey="Pedido" stackId="a" fill="#fcd34d" radius={[3, 3, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
+      {popup && <PopupPedidos mesLargo={popup.mesLargo} ordenes={popup.ordenes} onClose={() => setPopup(null)} />}
     </div>
   );
 }

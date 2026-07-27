@@ -9,11 +9,19 @@ export interface PuntoMovimiento {
   inventario: number;  // inventario disponible al cierre de esa semana
 }
 
+export interface OrdenMes {
+  proveedor: string;
+  orden: string;    // fecha de orden (tal cual del dato)
+  llegada: string;  // fecha de llegada (tal cual del dato)
+  cantidad: number;
+  nueva: boolean;   // true = el pedido se hizo ese mismo mes
+}
 export interface MesPedidos {
   mes: string;         // "YYYY-MM"
   inventario: number;  // stock al cierre del mes
   transito: number;    // en tránsito (pedido anterior que aún no llega)
   pedido: number;      // pedido hecho ese mes
+  ordenes: OrdenMes[]; // detalle de las órdenes de ese mes (para el popup)
 }
 
 export interface SerieSpec {
